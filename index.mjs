@@ -116,10 +116,17 @@ export const GPTFreePoolPlugin = async (ctx = {}) => {
         };
       },
       // magpie's own hook (host.js `auth.usage`): what the account's image
-      // allowance has left, shown on the Providers page beside the account the
-      // way a built-in provider's own balance is. The upstream reports only
-      // what remains, never a total, so it goes as `balance` — a number with no
-      // share magpie would have to invent — and `resetsAt` is when it is back.
+      // allowance has left, shown beside the account the way a built-in
+      // provider's balance is. The upstream reports only what remains, never a
+      // total, so it goes as `balance` — a number with no share to invent.
+      //
+      // The pool keeps the number itself: every generation takes one off
+      // (recordImageCall), and a refusal that says the allowance is gone pins
+      // it at 0 until the reset. So magpie asking again — it asks at its own
+      // pace, a card at most every 30 seconds — is answered from the pool's
+      // stats, and upstream is read only twice: once when nothing is known
+      // yet, and once after a reset has gone by. Never while a known reading
+      // still holds, and never more often than that.
       async usage(getAuth, _provider, options = {}) {
         const auth = await getAuth();
         const slot = slotFromAuth(auth);
@@ -130,16 +137,15 @@ export const GPTFreePoolPlugin = async (ctx = {}) => {
 
         const stats = await readPoolStats().catch(() => null);
         const cached = stats?.accounts?.[slot];
-        const cachedQuota = Number(cached?.imageQuota);
-        const checkedAt = cached?.quotaCheckedAt ? Date.parse(cached.quotaCheckedAt) : 0;
-        let quota = Number.isFinite(cachedQuota) ? cachedQuota : null;
+        let quota = Number(cached?.imageQuota);
         let resetsAt = cached?.restoreAt || null;
         let plan = cached?.planType || "";
+        const resetMs = Date.parse(cached?.limitedUntil || resetsAt || "");
+        const checkedMs = cached?.quotaCheckedAt ? Date.parse(cached.quotaCheckedAt) : 0;
 
-        // A reading older than five minutes is asked again; magpie asks at its
-        // own pace (a card, at most every 30 seconds), so a warm reading is
-        // answered from the pool's own stats.
-        if (!(quota !== null && Date.now() - checkedAt < 5 * 60_000)) {
+        const unknown = !Number.isFinite(quota);
+        const resetPassed = resetMs > 0 && Date.now() >= resetMs && !(checkedMs >= resetMs);
+        if (unknown || resetPassed) {
           const read = await checkWebImageQuota({
             accessToken: account.accessToken,
             signal: options?.signal,
@@ -155,22 +161,23 @@ export const GPTFreePoolPlugin = async (ctx = {}) => {
               hasImageLimit: read.has_image_limit ?? null,
               planType: plan || null,
             }).catch(() => {});
-          } else if (quota === null) {
+          } else if (unknown) {
             return { windows: [], error: String(read?.error || "额度查询失败").slice(0, 120) };
           }
         }
 
+        const when = cached?.limitedUntil || resetsAt;
         return {
           plan,
           user: account.email,
-          windows: quota === null ? [] : [{
+          windows: Number.isFinite(quota) ? [{
             name: "生图额度",
             balance: quota,
             unit: "张",
             // Both image models spend this one allowance.
             model: "image",
-            ...(resetsAt ? { resetsAt } : {}),
-          }],
+            ...(when ? { resetsAt: when } : {}),
+          }] : [],
         };
       },
     },
