@@ -55,6 +55,11 @@ MAX_INPUT_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_PNG_DECODED_BYTES = 100 * 1024 * 1024
 SUPPORTED_OUTPUT_FORMATS = {"", "auto", "png", "webp", "jpeg", "jpg", "gif"}
 
+# What a "gif" request is asked for when the caller names no frame count or
+# timing: OpenAI's own defaults for output_format=gif.
+DEFAULT_GIF_FRAMES = 9
+DEFAULT_GIF_FRAME_MS = 200
+
 # Models exposed to clients (mirrors yang0/chatgpt2api-dsh).
 IMAGE_MODELS = (
     "gpt-image-2",
@@ -653,11 +658,19 @@ def build_image_prompt(
     if fmt_clean == "jpg":
         fmt_clean = "jpeg"
     if fmt_clean == "gif":
+        # The Web pipeline has no frame parameters: the count and the timing
+        # are asked for in words, and a model given no number tends to answer
+        # with one still frame. So an unasked frame count is not "whatever the
+        # model decides", it is the default the caller wanted anyway — magpie's
+        # gateway drops frame_count/frame_duration_ms before the plugin sees
+        # them (drawImages forwards a fixed field list), and without them a
+        # "gif" request came back as a plain PNG.
         hints.append("生成格式为 gif 动图；输出真正的多帧动画，不要输出分镜拼图或静态帧。")
-        if frame_count is not None:
-            hints.append(f"帧数约为 {int(frame_count)} 帧。")
-        if frame_duration_ms is not None:
-            hints.append(f"每帧时长约为 {int(frame_duration_ms)} 毫秒。")
+        hints.append(f"帧数约为 {int(frame_count if frame_count is not None else DEFAULT_GIF_FRAMES)} 帧。")
+        hints.append(
+            f"每帧时长约为 "
+            f"{int(frame_duration_ms if frame_duration_ms is not None else DEFAULT_GIF_FRAME_MS)} 毫秒。"
+        )
     elif fmt_clean and fmt_clean != "auto":
         hints.append(f"输出图片格式为 {fmt_clean}。")
     bg_clean = str(background or "").strip().lower()

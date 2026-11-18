@@ -184,7 +184,9 @@ class ImageWorkerUnitTests(unittest.TestCase):
 
     def test_image_model_2_6_support_gif_and_rejects_unknown_models(self):
         self.assertEqual(image_worker.normalize_image_model("gpt-image-2.6"), "gpt-image-2.6")
-        self.assertEqual(image_worker.normalize_image_model("plus-gpt-image-2.6-flare"), "gpt-image-2.6-flare")
+        # Flare and Sunburst asked for exactly what 2.6 asks for: aliases now.
+        self.assertEqual(image_worker.normalize_image_model("plus-gpt-image-2.6-flare"), "gpt-image-2.6")
+        self.assertEqual(image_worker.normalize_image_model("gpt-image-2.6-sunburst"), "gpt-image-2.6")
         self.assertEqual(image_worker.normalize_image_model(""), "gpt-image-2")
         self.assertIsNone(image_worker.normalize_image_model("gpt-image-9"))
         self.assertEqual(image_worker.image_model_settings("gpt-image-2")[0], image_worker.DEFAULT_UPSTREAM_MODEL)
@@ -192,6 +194,11 @@ class ImageWorkerUnitTests(unittest.TestCase):
         self.assertIn("gif 动图", image_worker.build_image_prompt(
             "spin", output_format="gif", frame_count=8, frame_duration_ms=120,
         ))
+        # magpie's gateway drops frame_count before the plugin sees it; a gif
+        # request must still ask for frames, or the model answers with a still.
+        bare = image_worker.build_image_prompt("spin", output_format="gif")
+        self.assertIn(f"帧数约为 {image_worker.DEFAULT_GIF_FRAMES} 帧", bare)
+        self.assertIn(f"每帧时长约为 {image_worker.DEFAULT_GIF_FRAME_MS} 毫秒", bare)
 
         # GIF is only valid for the 2.6 family and must be rejected for gpt-image-2.
         bad_gif = image_worker.handle_payload({
