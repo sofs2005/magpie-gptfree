@@ -117,6 +117,9 @@ https://github.com/yang0/magpie-gptfree
 **Q：需要自己装 Python 吗？**
 不需要。插件首次运行会自动准备好运行环境；万一失败会明确报错，不会偷偷失败。
 
+**Q：Docker 版的 magpie 里没有 Python，能用吗？**
+能。镜像里没有 `python3` 时，插件会自己下载 uv、装一个 CPython 3.12 和 `curl_cffi`，全部放在 `/config` 卷上，第一次约 30 秒，之后重启、换镜像都不用重来。换源和细节见 [docs/docker-no-python.md](docs/docker-no-python.md)。
+
 **Q：会动到我 Magpie 里原来的账号吗？**
 不会。这是完全独立的临时号池，不碰你原有的配置。
 
