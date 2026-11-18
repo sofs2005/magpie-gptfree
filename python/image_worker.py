@@ -136,6 +136,12 @@ _CONTENT_POLICY_KEYWORDS = (
     "safety system",
 )
 
+# Said by the model when the account has spent its daily image quota.
+_QUOTA_KEYWORDS = (
+    "图像生成请求上限", "请求上限", "上限将在", "已达到",
+    "request limit", "usage limit", "rate limit", "额度",
+)
+
 
 class ImageWorkerError(RuntimeError):
     def __init__(
@@ -271,6 +277,43 @@ def _is_content_policy_error(error_msg: str) -> bool:
         return False
     low = error_msg.lower()
     return any(keyword in low for keyword in _CONTENT_POLICY_KEYWORDS)
+
+
+def _quota_retry_after(error_msg: str) -> int | None:
+    """Seconds to wait when the account is out of image quota, else None.
+
+    An account that has spent its daily image quota says so in the model's own
+    words ("你已达到 Free 套餐的图像生成请求上限… 上限将在 23小时 后重置"), and the
+    same reply explains that the GIF tool could not be called. That is not a
+    content-policy refusal: the account is out for the day, so the pool has to
+    move on to the next account instead of failing the request outright.
+    """
+    text = str(error_msg or "")
+    if not text:
+        return None
+    low = text.lower()
+    if not any(keyword in low for keyword in _QUOTA_KEYWORDS):
+        return None
+    hours = re.search(r"(\d+)\s*(?:小时|hours?|h)\b", text)
+    if hours:
+        return min(int(hours.group(1)) * 3600, 86400)
+    minutes = re.search(r"(\d+)\s*(?:分钟|minutes?|min)\b", text)
+    if minutes:
+        return min(int(minutes.group(1)) * 60, 86400)
+    return 3600
+
+
+def _raise_if_quota(error_msg: str, conversation_id: str = "") -> None:
+    wait = _quota_retry_after(error_msg)
+    if wait is None:
+        return
+    raise ImageWorkerError(
+        _sanitize_error_text(error_msg),
+        http_status=429,
+        error_code="rate_limited",
+        conversation_id=conversation_id,
+        retry_after=wait,
+    )
 
 
 def _is_model_text_reply_instead_of_image(message: str) -> bool:
@@ -1680,6 +1723,7 @@ class OpenAIWebImageClient:
             if not file_ids and not sediment_ids:
                 policy_msg = self._find_content_policy_error_in_conversation(conversation)
                 if policy_msg:
+                    _raise_if_quota(policy_msg, conversation_id)
                     raise ImageContentPolicyError(policy_msg, conversation_id)
 
             if file_ids or sediment_ids:
@@ -1698,6 +1742,7 @@ class OpenAIWebImageClient:
                 time.sleep(wait)
 
         if last_task_error and _is_content_policy_error(last_task_error):
+            _raise_if_quota(last_task_error, conversation_id)
             raise ImageContentPolicyError(last_task_error, conversation_id)
         raise ImagePollTimeoutError(
             f"ChatGPT image polling timed out after {int(timeout_secs)}s",
@@ -1902,12 +1947,14 @@ class OpenAIWebImageClient:
 
             if message and not file_ids and not sediment_ids and state.blocked:
                 detailed = self._get_detailed_task_error(conversation_id, wait_secs=min(1.0, self.settle_secs))
+                _raise_if_quota(detailed or message, conversation_id)
                 raise ImageContentPolicyError(detailed or message, conversation_id)
 
             is_text_reply = bool(message and _is_model_text_reply_instead_of_image(message))
             should_poll = bool(references) or state.turn_use_case == "image gen" or is_text_reply
 
             if message and not file_ids and not sediment_ids and not should_poll:
+                _raise_if_quota(message, conversation_id)
                 if _is_content_policy_error(message):
                     raise ImageContentPolicyError(message, conversation_id)
                 raise ImageWorkerError(
@@ -1923,6 +1970,7 @@ class OpenAIWebImageClient:
             if not file_ids and not sediment_ids and conversation_id and not should_poll:
                 detailed = self._get_detailed_task_error(conversation_id, wait_secs=min(0.5, self.settle_secs))
                 if detailed:
+                    _raise_if_quota(detailed, conversation_id)
                     if _is_content_policy_error(detailed):
                         raise ImageContentPolicyError(detailed, conversation_id)
                     raise ImageWorkerError(

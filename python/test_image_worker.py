@@ -182,6 +182,28 @@ class ImageWorkerUnitTests(unittest.TestCase):
         _, _, _, rgba2 = image_worker._decode_png_rgba(out2)
         self.assertEqual(list(rgba2[3::4]), [42, 42, 42, 42])
 
+    def test_quota_exhaustion_is_rate_limited_not_content_policy(self):
+        # What the model answers on an account that spent its daily image
+        # quota. It mentions being unable to make a GIF, which the content
+        # policy keywords used to swallow — and a content-policy refusal ends
+        # the request instead of moving on to the next pooled account.
+        message = (
+            "你已达到 Free 套餐的图像生成请求上限。上限将在 23小时 后重置，"
+            "届时可创建更多图像。 这次未能调用 GIF 动画生成工具，因此暂时无法生成真正的多帧 GIF。"
+        )
+        self.assertEqual(image_worker._quota_retry_after(message), 23 * 3600)
+        with self.assertRaises(image_worker.ImageWorkerError) as caught:
+            image_worker._raise_if_quota(message, "conv-1")
+        self.assertEqual(caught.exception.http_status, 429)
+        self.assertEqual(caught.exception.error_code, "rate_limited")
+        self.assertEqual(caught.exception.retry_after, 23 * 3600)
+        self.assertEqual(caught.exception.conversation_id, "conv-1")
+
+        # A real refusal keeps its own meaning.
+        refusal = "这张图违反了内容政策，无法生成"
+        self.assertIsNone(image_worker._quota_retry_after(refusal))
+        self.assertTrue(image_worker._is_content_policy_error(refusal))
+
     def test_image_model_2_6_support_gif_and_rejects_unknown_models(self):
         self.assertEqual(image_worker.normalize_image_model("gpt-image-2.6"), "gpt-image-2.6")
         # Flare and Sunburst asked for exactly what 2.6 asks for: aliases now.
