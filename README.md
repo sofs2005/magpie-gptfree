@@ -6,9 +6,13 @@
 
 [![Magpie](https://img.shields.io/badge/Magpie-Plugin-3177d9)](https://github.com/yetone/magpie)
 [![license](https://img.shields.io/badge/license-MIT-16845c)](./package.json)
-[![version](https://img.shields.io/badge/version-0.6.4-a36207)](./package.json)
+[![version](https://img.shields.io/badge/version-0.7.0-a36207)](./package.json)
 
 ---
+
+> **关于这个仓库**：这是从 [yang0/magpie-gptfree](https://github.com/yang0/magpie-gptfree) 分出来的个人分支，在上游基础上改了一些地方（Docker 环境下的运行、模型清单校准、生图与额度上报等），就不一条条列了。原版的设计与绝大部分实现都来自原作者 [@yang0](https://github.com/yang0)，谢谢他。
+>
+> 插件本身跑在 [magpie（喜鹊）](https://github.com/yetone/magpie) 上，也谢谢 [@yetone](https://github.com/yetone) 和这个平台——没有它，这套东西没有落脚的地方。
 
 ## 这玩意儿能干什么
 
