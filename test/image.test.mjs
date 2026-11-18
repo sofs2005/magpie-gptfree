@@ -182,6 +182,38 @@ test("parseImageRequest parses both JSON generations and multipart/form-data edi
   );
 });
 
+test("an exhausted pool answers 429 with resets_at, not a 503", async () => {
+  // The account spent its daily image quota: the worker says 429 with the wait
+  // the upstream named. magpie reads a used-up allowance out of resets_at /
+  // resets_in_seconds (gateway/resetsIn) and rests the account until then;
+  // without them it looked like a 5xx and was asked again a minute later.
+  const acc = { email: "gamma@example.com", password: "p", totp: seed, accessToken: jwt(3600, "gamma@example.com") };
+  const res = await poolFetch(CODEX_BASE + "/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-image-2.6", prompt: "a bouncing ball", output_format: "gif" }),
+  }, {
+    read: async () => [acc],
+    statsStore: createInMemoryStatsStore(),
+    runWorker: async () => ({
+      ok: false,
+      http_status: 429,
+      error_code: "rate_limited",
+      retry_after: 82800,
+      error: "你已达到 Free 套餐的图像生成请求上限。上限将在 23小时 后重置",
+    }),
+  });
+
+  assert.equal(res.status, 429);
+  assert.equal(res.headers.get("retry-after"), "82800");
+  const body = await res.json();
+  assert.equal(body.error.type, "usage_limit_reached");
+  assert.equal(body.error.code, "rate_limited");
+  assert.equal(body.error.resets_in_seconds, 82800);
+  const now = Math.floor(Date.now() / 1000);
+  assert.ok(Math.abs(body.error.resets_at - (now + 82800)) <= 5,
+    `resets_at ${body.error.resets_at} should be ~${now + 82800}`);
+});
+
 test("poolFetch /images/generations supports 401 reauth, 429/502 failover, preferredSlot, and multiple images (n=2)", async () => {
   const accA = { email: "alpha@example.com", password: "p1", totp: seed, accessToken: jwt(3600, "alpha@example.com") };
   const accB = { email: "beta@example.com", password: "p2", totp: seed, accessToken: jwt(3600, "beta@example.com") };
