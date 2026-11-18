@@ -59,8 +59,8 @@ test("discoverPoolModels includes verified Web text models for Platform OAuth ac
     return new Response(
       JSON.stringify({
         models: [
-          { slug: "gpt-6-luna", display_name: "GPT-6 Luna" },
-          { slug: "gpt-5.6-luna", display_name: "GPT-5.6 Luna" },
+          { slug: "gpt-6", display_name: "GPT-6" },
+          { slug: "gpt-5-6", display_name: "GPT-5.6 Luna" },
         ],
       }),
       { status: 200, headers: { "content-type": "application/json" } },
@@ -72,19 +72,22 @@ test("discoverPoolModels includes verified Web text models for Platform OAuth ac
     fetcher,
   });
 
-  assert.equal(models["gpt-6-luna"].api.npm, "@ai-sdk/openai");
-  assert.equal(models["gpt-5.6-luna"].api.npm, "@ai-sdk/openai");
-  assert.equal(models["gpt-5.6-terra"].api.npm, "@ai-sdk/openai");
-  assert.equal(models["gpt-5-6"].api.npm, "@ai-sdk/openai");
-  assert.equal(models["auto"].api.npm, "@ai-sdk/openai");
+  const verified = [
+    "gpt-6", "gpt-5-6", "gpt-6-mini", "gpt-5-6-mini",
+    "gpt-6-t-mini", "gpt-5-6-t-mini", "auto",
+  ];
+  for (const id of verified) assert.equal(models[id].api.npm, "@ai-sdk/openai");
   assert.equal(models["gpt-image-2.6"].api.npm, "@ai-sdk/openai-compatible");
-  assert.equal("gpt-5.6-luna-wm" in models, false);
+  // Not in the upstream's own model list: sent as-is they silently run gpt-6,
+  // and the watermarked variants 403 on the Web endpoints.
+  for (const id of ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-luna-wm"])
+    assert.equal(id in models, false);
 });
 
 test("extractWebTextRequest parses instructions, multi-turn items, tool calls, and reasoning", () => {
   const req = extractWebTextRequest(
     JSON.stringify({
-      model: "gptfree-pool/gpt-5.6-terra",
+      model: "gptfree-pool/gpt-5-6",
       instructions: "Be accurate.",
       reasoning: { effort: "high" },
       stream: true,
@@ -97,8 +100,8 @@ test("extractWebTextRequest parses instructions, multi-turn items, tool calls, a
     }),
   );
 
-  assert.equal(req.model, "gpt-5.6-terra");
-  assert.equal(req.requestedModel, "gptfree-pool/gpt-5.6-terra");
+  assert.equal(req.model, "gpt-5-6");
+  assert.equal(req.requestedModel, "gptfree-pool/gpt-5-6");
   assert.equal(req.stream, true);
   assert.equal(req.thinkingEffort, "high");
   assert.equal(req.messages[0].role, "system");
@@ -108,7 +111,7 @@ test("extractWebTextRequest parses instructions, multi-turn items, tool calls, a
   assert.match(req.messages[3].content, /call_1/);
 
   assert.throws(() => extractWebTextRequest("{bad json"), /Invalid Responses request/);
-  assert.throws(() => extractWebTextRequest(JSON.stringify({ model: "gpt-6-luna", input: "   " })), /at least one/);
+  assert.throws(() => extractWebTextRequest(JSON.stringify({ model: "gpt-6", input: "   " })), /at least one/);
 });
 
 test("poolFetch routes Platform Web accounts away from /codex/responses and formats Responses SSE", async () => {
@@ -119,7 +122,7 @@ test("poolFetch routes Platform Web accounts away from /codex/responses and form
   const res = await poolFetch(`${CODEX_BASE}/responses`, {
     method: "POST",
     body: JSON.stringify({
-      model: "gpt-6-luna",
+      model: "gpt-6",
       instructions: "Concise",
       input: "2+2?",
       stream: true,
@@ -132,7 +135,7 @@ test("poolFetch routes Platform Web accounts away from /codex/responses and form
     },
     webTextRunner: async (payload, { onDelta }) => {
       assert.equal(payload.access_token, pTok);
-      assert.equal(payload.model, "gpt-6-luna");
+      assert.equal(payload.model, "gpt-6");
       assert.deepEqual(payload.messages, [
         { role: "system", content: "Concise" },
         { role: "user", content: "2+2?" },
@@ -222,14 +225,14 @@ test("poolFetch switches to Web text if reauth produces a Platform token and run
   ac.abort();
   await assert.rejects(
     runWebTextWorker(
-      { access_token: renewedPlatform, model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] },
+      { access_token: renewedPlatform, model: "gpt-6", messages: [{ role: "user", content: "hi" }] },
       { signal: ac.signal, python: async () => "python" },
     ),
     /Aborted/,
   );
 
   const res = await runWebTextWorker(
-    { access_token: "", model: "gpt-6-luna", messages: [{ role: "user", content: "hi" }] },
+    { access_token: "", model: "gpt-6", messages: [{ role: "user", content: "hi" }] },
     { python: async () => process.env.PYTHON || (process.platform === "win32" ? "python" : "python3") },
   );
   assert.equal(res.ok, false);

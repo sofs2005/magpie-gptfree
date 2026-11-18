@@ -10,6 +10,7 @@ import {
 import {
   IMAGE_MODEL_ID,
   buildImageModelCatalog,
+  normalizeImageModelId,
   checkWebImageQuota,
   executeWebImageGeneration,
   isImageModelId,
@@ -57,14 +58,20 @@ test("image model catalog exposes Magpie host.js @ai-sdk/openai-compatible schem
   assert.equal(img.capabilities.output.image, true);
   assert.equal(img.attachment, true);
 
-  // The 2.6 family must be exposed too, and only 2.6 supports animated GIF.
-  const flags = ["gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"];
+  // 2.6 is the only model that supports animated GIF.
+  const flags = ["gpt-image-2.6"];
   for (const id of flags) {
     const model = cat[id];
     assert.equal(model.id, id);
     assert.equal(model.api.npm, "@ai-sdk/openai-compatible");
     assert.equal(model.capabilities.output.image, true);
     assert.equal(model.capabilities.animated, true);
+  }
+  // Flare and Sunburst asked for exactly what 2.6 asks for, so they are aliases.
+  for (const alias of ["gpt-image-2.6-flare", "gpt-image-2.6-sunburst"]) {
+    assert.equal(alias in cat, false);
+    assert.equal(normalizeImageModelId(alias), "gpt-image-2.6");
+    assert.equal(normalizeImageModelId("plus-" + alias), "gpt-image-2.6");
   }
   assert.equal(cat["gpt-image-2"].capabilities.animated, undefined);
   assert.equal(isImageModelId("plus-gpt-image-2.6"), true);
@@ -99,10 +106,10 @@ test("image model catalog exposes Magpie host.js @ai-sdk/openai-compatible schem
   const models = await discoverPoolModels({
     read: async () => [{ email: "free@example.com", password: "p", totp: seed, accessToken: jwt(3600, "free@example.com") }],
     fetcher: async () => new Response(JSON.stringify({
-      models: [{ slug: "gpt-5.6-luna", display_name: "GPT-5.6-Luna", visibility: "list" }],
+      models: [{ slug: "gpt-5-6", display_name: "GPT-5.6 Luna", visibility: "list" }],
     }), { status: 200, headers: { "content-type": "application/json" } }),
   });
-  assert.equal(models["gpt-5.6-luna"].api.npm, "@ai-sdk/openai");
+  assert.equal(models["gpt-5-6"].api.npm, "@ai-sdk/openai");
   assert.equal(models["gpt-image-2"].api.npm, "@ai-sdk/openai-compatible");
 });
 
@@ -118,7 +125,7 @@ test("TestModels chat/completions probe returns 400 pointing to Images API or Re
 
   const codexProbe = await poolFetch(CODEX_BASE + "/chat/completions", {
     method: "POST",
-    body: JSON.stringify({ model: "gpt-5.6-luna", messages: [{ role: "user", content: "hi" }] }),
+    body: JSON.stringify({ model: "gpt-5-6", messages: [{ role: "user", content: "hi" }] }),
   });
   assert.equal(codexProbe.status, 400);
   const codexJson = await codexProbe.json();

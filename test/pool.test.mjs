@@ -192,7 +192,7 @@ test("discoverPoolModels renews expired multi-account pool and skips failed acco
     },
   });
   assert.deepEqual(Object.keys(models), [
-    "gpt-6", "gpt-image-2", "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
+    "gpt-6", "gpt-image-2", "gpt-image-2.6",
   ]);
   assert.equal(models["gpt-6"].api.npm, "@ai-sdk/openai");
   assert.equal(models["gpt-image-2"].api.npm, "@ai-sdk/openai-compatible");
@@ -251,7 +251,7 @@ test("preferredSlot tries the selected Magpie account first in poolFetch and dis
     },
   });
   assert.deepEqual(Object.keys(catalog), [
-    "gpt-6", "gpt-image-2", "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
+    "gpt-6", "gpt-image-2", "gpt-image-2.6",
   ]);
   assert.deepEqual(probeOrder, ["Bearer " + accountB.accessToken]);
 

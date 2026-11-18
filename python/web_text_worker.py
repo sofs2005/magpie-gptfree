@@ -35,7 +35,7 @@ from image_worker import (
 )
 
 MAX_STDIN_BYTES = 16 * 1024 * 1024
-DEFAULT_WEB_TEXT_MODEL = "gpt-5.6-luna"
+DEFAULT_WEB_TEXT_MODEL = "gpt-6"
 VALID_THINKING_EFFORTS = {"low", "medium", "high", "xhigh"}
 ALLOWED_ROLES = {"system", "developer", "user", "assistant"}
 

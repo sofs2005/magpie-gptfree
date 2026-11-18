@@ -59,10 +59,15 @@ SUPPORTED_OUTPUT_FORMATS = {"", "auto", "png", "webp", "jpeg", "jpg", "gif"}
 IMAGE_MODELS = (
     "gpt-image-2",
     "gpt-image-2.6",
-    "gpt-image-2.6-flare",
-    "gpt-image-2.6-sunburst",
 )
-GIF_CAPABLE_MODELS = {"gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"}
+# Flare and Sunburst sent exactly the same request as 2.6 (model="auto", the
+# same picture_v2 hints), so they are folded into 2.6 and kept only as aliases
+# for clients that already ask for them.
+IMAGE_MODEL_ALIASES = {
+    "gpt-image-2.6-flare": "gpt-image-2.6",
+    "gpt-image-2.6-sunburst": "gpt-image-2.6",
+}
+GIF_CAPABLE_MODELS = {"gpt-image-2.6"}
 IMAGE_MODEL_PLAN_TYPES = ("plus", "team", "pro")
 DEFAULT_UPSTREAM_MODEL = "gpt-5-5"
 
@@ -74,10 +79,17 @@ def normalize_image_model(model: Any) -> str | None:
         return "gpt-image-2"
     if raw in IMAGE_MODELS:
         return raw
+    if raw in IMAGE_MODEL_ALIASES:
+        return IMAGE_MODEL_ALIASES[raw]
     for plan_type in IMAGE_MODEL_PLAN_TYPES:
         prefix = f"{plan_type}-"
-        if raw.startswith(prefix) and raw[len(prefix):] in IMAGE_MODELS:
-            return raw[len(prefix):]
+        if not raw.startswith(prefix):
+            continue
+        rest = raw[len(prefix):]
+        if rest in IMAGE_MODELS:
+            return rest
+        if rest in IMAGE_MODEL_ALIASES:
+            return IMAGE_MODEL_ALIASES[rest]
     return None
 
 
