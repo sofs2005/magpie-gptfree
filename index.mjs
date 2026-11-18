@@ -4,8 +4,11 @@
  * Primary import & management live in the left-sidebar page (GPT号池).
  */
 import { CODEX_BASE, discoverPoolModels, poolFetch } from "./lib/codex-pool.mjs";
+import { checkWebImageQuota } from "./lib/chatgpt-web-image.mjs";
 import { GUI_PORT, startGuiServer } from "./lib/gui-service.mjs";
-import { createPoolConnector, POOL_MARKER, POOL_PROVIDER } from "./lib/pool-connection.mjs";
+import { accountSlotTag, createPoolConnector, POOL_MARKER, POOL_PROVIDER } from "./lib/pool-connection.mjs";
+import { readPoolStats, recordQuotaCheck } from "./lib/pool-stats.mjs";
+import { listPool } from "./lib/pool-vault.mjs";
 import { nativeImportMethod } from "./lib/provider-native-signin.mjs";
 
 let sharedClient = null;
@@ -110,6 +113,64 @@ export const GPTFreePoolPlugin = async (ctx = {}) => {
           baseURL: CODEX_BASE,
           apiKey: POOL_MARKER,
           fetch: (input, init) => poolFetch(input, init, { preferredSlot }),
+        };
+      },
+      // magpie's own hook (host.js `auth.usage`): what the account's image
+      // allowance has left, shown on the Providers page beside the account the
+      // way a built-in provider's own balance is. The upstream reports only
+      // what remains, never a total, so it goes as `balance` — a number with no
+      // share magpie would have to invent — and `resetsAt` is when it is back.
+      async usage(getAuth, _provider, options = {}) {
+        const auth = await getAuth();
+        const slot = slotFromAuth(auth);
+        if (!slot) return { windows: [], error: "账号没有号池槽位" };
+        const accounts = await listPool().catch(() => []);
+        const account = accounts.find((item) => accountSlotTag(item.email) === slot);
+        if (!account?.accessToken) return { windows: [], error: "这个账号不在号池里" };
+
+        const stats = await readPoolStats().catch(() => null);
+        const cached = stats?.accounts?.[slot];
+        const cachedQuota = Number(cached?.imageQuota);
+        const checkedAt = cached?.quotaCheckedAt ? Date.parse(cached.quotaCheckedAt) : 0;
+        let quota = Number.isFinite(cachedQuota) ? cachedQuota : null;
+        let resetsAt = cached?.restoreAt || null;
+        let plan = cached?.planType || "";
+
+        // A reading older than five minutes is asked again; magpie asks at its
+        // own pace (a card, at most every 30 seconds), so a warm reading is
+        // answered from the pool's own stats.
+        if (!(quota !== null && Date.now() - checkedAt < 5 * 60_000)) {
+          const read = await checkWebImageQuota({
+            accessToken: account.accessToken,
+            signal: options?.signal,
+          }).catch((error) => ({ ok: false, error: String(error?.message || error) }));
+          if (read?.ok) {
+            quota = Number(read.quota) || 0;
+            resetsAt = read.restore_at || null;
+            plan = read.plan_type || plan;
+            await recordQuotaCheck({
+              email: account.email,
+              quota,
+              restoreAt: resetsAt,
+              hasImageLimit: read.has_image_limit ?? null,
+              planType: plan || null,
+            }).catch(() => {});
+          } else if (quota === null) {
+            return { windows: [], error: String(read?.error || "额度查询失败").slice(0, 120) };
+          }
+        }
+
+        return {
+          plan,
+          user: account.email,
+          windows: quota === null ? [] : [{
+            name: "生图额度",
+            balance: quota,
+            unit: "张",
+            // Both image models spend this one allowance.
+            model: "image",
+            ...(resetsAt ? { resetsAt } : {}),
+          }],
         };
       },
     },
