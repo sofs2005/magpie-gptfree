@@ -631,9 +631,16 @@
       const left = el("div", "account-main");
       const head = el("div", "account-head");
       head.append(el("strong", "", account.slotLabel || account.email));
-      const badge = poolTokenBadges[account.tokenState] || (account.hasAccess
-        ? poolTokenBadges.unexpired_unverified
-        : poolTokenBadges.missing);
+      // "待请求确认" is what the local JWT check can say on its own: not
+      // expired, never seen by the upstream (credentials.mjs says as much).
+      // Once a generation has gone through on this token, it has been
+      // confirmed, so say so instead of leaving the badge waiting forever.
+      const confirmed = account.tokenState === "unexpired_unverified" && (account.successCalls || 0) > 0;
+      const badge = confirmed
+        ? { cls: "good", text: `Token 已验证（成功 ${account.successCalls} 次）` }
+        : poolTokenBadges[account.tokenState] || (account.hasAccess
+          ? poolTokenBadges.unexpired_unverified
+          : poolTokenBadges.missing);
       head.append(el("span", "pill " + badge.cls, badge.text));
       if (account.planType) {
         head.append(el("span", "pill plan", account.planType.toUpperCase()));
