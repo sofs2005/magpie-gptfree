@@ -55,8 +55,9 @@ MAX_INPUT_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_PNG_DECODED_BYTES = 100 * 1024 * 1024
 SUPPORTED_OUTPUT_FORMATS = {"", "auto", "png", "webp", "jpeg", "jpg", "gif"}
 
-# What a "gif" request is asked for when the caller names no frame count or
-# timing: OpenAI's own defaults for output_format=gif.
+# What the Web pipeline's GIF actually is, so the prompt can say it: the frame
+# count the caller asks for is not honoured upstream (4 and 16 both come back
+# as 9 frames, measured in g2a).
 DEFAULT_GIF_FRAMES = 9
 DEFAULT_GIF_FRAME_MS = 200
 
@@ -637,6 +638,22 @@ def composite_images_with_masks(
     return out
 
 
+def prefer_animation_outputs(payloads: list[bytes]) -> list[bytes]:
+    """Keep only the animated assets when the caller asked for a gif.
+
+    One 2.6 turn returns two assets: a 9-frame GIF and the still it was cut
+    from (measured upstream: a 438x388 GIF beside a 1330x1182 PNG), and both
+    are labelled image/png in the stream. A caller that asked for a gif and
+    gets the still first has a still, so the stills are dropped here — by
+    content, never by the label.
+
+    When this turn produced no animation at all the payloads are returned
+    untouched: an honest PNG beats an empty response.
+    """
+    animations = [raw for raw in payloads if raw[:6] in (b"GIF87a", b"GIF89a")]
+    return animations or payloads
+
+
 def build_image_prompt(
     prompt: str,
     *,
@@ -658,19 +675,14 @@ def build_image_prompt(
     if fmt_clean == "jpg":
         fmt_clean = "jpeg"
     if fmt_clean == "gif":
-        # The Web pipeline has no frame parameters: the count and the timing
-        # are asked for in words, and a model given no number tends to answer
-        # with one still frame. So an unasked frame count is not "whatever the
-        # model decides", it is the default the caller wanted anyway — magpie's
-        # gateway drops frame_count/frame_duration_ms before the plugin sees
-        # them (drawImages forwards a fixed field list), and without them a
-        # "gif" request came back as a plain PNG.
+        # The Web pipeline has no frame parameters, and the GIF it produces is
+        # always 9 frames: g2a measured 4 and 16 and got 9 both times, so the
+        # count and the timing are stated in words, at the values the upstream
+        # actually uses, whatever the caller asked for. magpie's gateway drops
+        # frame_count/frame_duration_ms anyway (drawImages forwards a fixed
+        # field list), and a gif request with no hint came back as a still.
         hints.append("生成格式为 gif 动图；输出真正的多帧动画，不要输出分镜拼图或静态帧。")
-        hints.append(f"帧数约为 {int(frame_count if frame_count is not None else DEFAULT_GIF_FRAMES)} 帧。")
-        hints.append(
-            f"每帧时长约为 "
-            f"{int(frame_duration_ms if frame_duration_ms is not None else DEFAULT_GIF_FRAME_MS)} 毫秒。"
-        )
+        hints.append(f"帧数约为 {DEFAULT_GIF_FRAMES} 帧。每帧时长约为 {DEFAULT_GIF_FRAME_MS} 毫秒。")
     elif fmt_clean and fmt_clean != "auto":
         hints.append(f"输出图片格式为 {fmt_clean}。")
     bg_clean = str(background or "").strip().lower()
@@ -1955,6 +1967,8 @@ class OpenAIWebImageClient:
                     error_code="no_image_generated",
                     conversation_id=conversation_id,
                 )
+            if output_format == "gif":
+                downloaded = prefer_animation_outputs(downloaded)
 
             data_items = [
                 {

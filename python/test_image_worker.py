@@ -191,6 +191,15 @@ class ImageWorkerUnitTests(unittest.TestCase):
         self.assertIsNone(image_worker.normalize_image_model("gpt-image-9"))
         self.assertEqual(image_worker.image_model_settings("gpt-image-2")[0], image_worker.DEFAULT_UPSTREAM_MODEL)
         self.assertEqual(image_worker.image_model_settings("gpt-image-2.6-sunburst"), ("auto", ""))
+        # One 2.6 turn gives a 9-frame GIF beside the still it was cut from,
+        # both labelled png: a gif request keeps the animation, by content.
+        still = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+        animation = b"GIF89a" + b"0" * 32
+        self.assertEqual(image_worker.prefer_animation_outputs([still, animation]), [animation])
+        self.assertEqual(image_worker.prefer_animation_outputs([animation, still]), [animation])
+        # Nothing animated this turn: an honest still beats an empty answer.
+        self.assertEqual(image_worker.prefer_animation_outputs([still]), [still])
+
         self.assertIn("gif 动图", image_worker.build_image_prompt(
             "spin", output_format="gif", frame_count=8, frame_duration_ms=120,
         ))
