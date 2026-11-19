@@ -36,6 +36,9 @@
   let preview = null, previewSource = "", lastSeq = 0, polling = null, busy = false, poolBusy = false, checkingDraft = false, activeTab = "import";
   const jobStates = new Map();
   const rowMessages = new Map();
+  // Rows whose "检测/刷新" is in flight.  The pool's own busy state disables
+  // the pool-level buttons; a single row's check disables only that row.
+  const checkingRows = new Set();
   // Magpie restarts its plugin host about once an hour (community plugin
   // auto-update). The page outlives that restart, so a request can be refused
   // with an expired page capability. Instead of leaving an error banner for the
@@ -216,9 +219,18 @@
     div.append(el("span", "event-account", "第 " + entry.line + " 行 · " + entry.email));
     div.append(el("span", "event-state", stateLabels[entry.state] || entry.state));
     if (entry.reason) div.append(el("span", "event-reason", entry.reason));
-    $("events").prepend(div);
-    if ($("events").children.length > 100) $("events").lastElementChild.remove();
+    // One line, replaced as the job advances: the log tracks the job's
+    // current state, not its history, so the line always reads as the
+    // latest thing that happened and stops there when the job ends.
+    $("events").replaceChildren(div);
     if (entry.line) jobStates.set(entry.line, entry.state);
+  }
+  function setSummaryEvent(text, state) {
+    // What the log rests on once the job is over.
+    const div = el("div", "event");
+    div.append(el("span", "event-dot " + state));
+    div.append(el("span", "event-state", text));
+    $("events").replaceChildren(div);
   }
   async function status() {
     let info;
@@ -259,13 +271,20 @@
         const failed = info.result?.failed ?? info.failed ?? 0;
         const skipped = info.result?.invalid ?? 0;
         const providerCount = info.providerCount ?? added;
+        setSummaryEvent(
+          `导入完成：成功 ${added} 个 · 失败 ${failed} 个${skipped ? ` · 跳过错误行 ${skipped}` : ""}`,
+          "added",
+        );
         if (info.providerConnected === true)
           notice(`导入完成：本次新增/更新 ${added} 个账号（失败 ${failed}${skipped ? `，已跳过错误行 ${skipped}` : ""}），当前已有 ${providerCount} 个账号独立入驻 Magpie Providers`);
         else if (info.providerConnected === false)
           notice(info.message || "账号已入池，但连接 Magpie 号池失败；请检查插件状态", true);
         else
           notice("批量处理完成，可在「我的账号池」与「额度统计」查看账号与详细状态；没有可用账号时不会连接供应商");
-      } else notice(info.message || "批量导入已停止，未完成的账号可稍后重试", true);
+      } else {
+        setSummaryEvent(info.message || "批量导入已停止，未完成的账号可稍后重试", "failed");
+        notice(info.message || "批量导入已停止，未完成的账号可稍后重试", true);
+      }
     }
   }
   function stopPolling() {
@@ -673,10 +692,20 @@
       const controls = el("div", "account-buttons");
       const refresh = el("button", "btn secondary small", "检测/刷新");
       refresh.type = "button";
-      refresh.disabled = poolBusy;
+      refresh.disabled = poolBusy || checkingRows.has(account.id);
       refresh.addEventListener("click", async () => {
+        if (refresh.disabled) return;
+        checkingRows.add(account.id);
+        refresh.disabled = true;
         refresh.textContent = "处理中…";
-        await refreshAccounts({ id: account.id, force: account.tokenState !== "unexpired_unverified" });
+        try {
+          await refreshAccounts({ id: account.id, force: account.tokenState !== "unexpired_unverified" });
+        } finally {
+          checkingRows.delete(account.id);
+          // The refresh's own loadPool renders while this row is still marked
+          // busy; this one puts the buttons back the way they were.
+          await loadPool();
+        }
       });
       const remove = el("button", "btn secondary small", "移除");
       remove.type = "button";
