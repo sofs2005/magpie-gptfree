@@ -355,8 +355,30 @@ test("a GUI port that stays busy gives up after the retry window", async () => {
   } finally { await busy.close(); }
 });
 
-test("concurrent GUI starts share one service", async () => {
+test("a page that lost the bind window comes back once the port frees", async () => {
+  // A host still finishing a picture holds the port past the retry window.
+  // Giving up for good there is what left the sidebar page answering 502 for
+  // an hour on the host; the background retry has to pick the port up later.
   const busy = createGuiService({ port: 0 });
+  const address = await busy.listen();
+  await assert.rejects(startGuiServer({ port: address.port, retryFor: 150, retryEvery: 25 }));
+  await busy.close();
+
+  let back = null;
+  for (let i = 0; i < 50 && !back; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    try {
+      const service = await startGuiServer({ port: address.port, retryFor: 100, retryEvery: 25 });
+      if (service.listening) back = service;
+    } catch {
+      // the background retry has not won the port yet
+    }
+  }
+  assert.ok(back, "the GUI service never came back after the port was freed");
+  await back.close();
+});
+
+test("concurrent GUI starts share one service", async () => {  const busy = createGuiService({ port: 0 });
   const address = await busy.listen();
   const first = startGuiServer({ port: address.port, retryEvery: 25 });
   const second = startGuiServer({ port: address.port, retryEvery: 25 });
