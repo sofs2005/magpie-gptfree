@@ -1,10 +1,10 @@
 """The web pipeline's browser identity: one browser, named the same way.
 
-Three things upstream can compare — the User-Agent, the client hints and the
-TLS/HTTP2 fingerprint curl_cffi's impersonate profile presents — used to
-disagree (Windows Edge 143 / Windows Chrome 145 / chrome110).  These tests
-hold them together, and hold the build-number headers to the page they came
-from.
+Two things upstream can compare — the User-Agent and the client hints
+(sec-ch-ua*) — used to name different browsers (Windows Edge 143 in the image
+and text workers, Windows Chrome 145 in login and sentinel).  These tests
+hold them together, keep the TLS profile at the one chatgpt.com actually
+serves, and hold the build-number headers to the page they came from.
 """
 from __future__ import annotations
 
@@ -32,19 +32,23 @@ class BrowserProfileTest(unittest.TestCase):
         ua_version = _version(browser_profile.USER_AGENT)
         self.assertTrue(ua_version, "USER_AGENT carries no version")
         self.assertIn('v="%s"' % ua_version, browser_profile.SEC_CH_UA)
-        self.assertEqual(browser_profile.IMPERSONATE, "chrome" + ua_version)
+        self.assertEqual(browser_profile.VERSION, ua_version)
 
     def test_no_second_identity_in_the_headers(self):
-        # Edge and Firefox spellings must not survive in the Chrome identity.
+        # The Edge spelling must not come back.
         self.assertNotIn("Edg/", browser_profile.USER_AGENT)
         self.assertNotIn("Edge", browser_profile.SEC_CH_UA)
         self.assertNotIn("Firefox", browser_profile.USER_AGENT)
 
-    def test_platform_follows_the_profile(self):
-        # Every chrome profile from chrome131 up presents macOS, so a Windows
-        # claim here would contradict the TLS fingerprint.
-        self.assertEqual(browser_profile.SEC_CH_UA_PLATFORM, '"macOS"')
-        self.assertIn("Macintosh", browser_profile.USER_AGENT)
+    def test_platform_is_the_one_the_ua_names(self):
+        self.assertEqual(browser_profile.SEC_CH_UA_PLATFORM, '"Windows"')
+        self.assertIn("Windows NT 10.0", browser_profile.USER_AGENT)
+
+    def test_tls_profile_stays_at_the_one_cloudflare_serves(self):
+        # Measured 2026-11-19 from the magpie host: chrome110 answers 200,
+        # every profile from chrome131 up answers 403.  Changing this without
+        # re-running that matrix breaks image and text generation outright.
+        self.assertEqual(browser_profile.IMPERSONATE, "chrome110")
 
     def test_workers_use_the_shared_identity(self):
         self.assertIs(image_worker.DEFAULT_USER_AGENT, browser_profile.USER_AGENT)
