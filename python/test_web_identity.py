@@ -41,14 +41,23 @@ class BrowserProfileTest(unittest.TestCase):
         self.assertNotIn("Firefox", browser_profile.USER_AGENT)
 
     def test_platform_is_the_one_the_ua_names(self):
-        self.assertEqual(browser_profile.SEC_CH_UA_PLATFORM, '"Windows"')
-        self.assertIn("Windows NT 10.0", browser_profile.USER_AGENT)
+        ua = browser_profile.USER_AGENT
+        if "Macintosh" in ua:
+            self.assertEqual(browser_profile.SEC_CH_UA_PLATFORM, '"macOS"')
+        else:
+            self.assertEqual(browser_profile.SEC_CH_UA_PLATFORM, '"Windows"')
+            self.assertIn("Windows NT 10.0", ua)
 
-    def test_tls_profile_stays_at_the_one_cloudflare_serves(self):
-        # Measured 2026-11-19 from the magpie host: chrome110 answers 200,
-        # every profile from chrome131 up answers 403.  Changing this without
-        # re-running that matrix breaks image and text generation outright.
-        self.assertEqual(browser_profile.IMPERSONATE, "chrome110")
+    def test_tls_profile_is_one_cloudflare_serves(self):
+        # Measured 2026-11-19 from the magpie host: chrome151 and chrome150
+        # answer 200 (five out of five), chrome110 always has.  Every entry
+        # here presents the browser it names, so the UA and the client hints
+        # follow whichever one the installed curl_cffi offers.  Changing this
+        # without re-running that matrix breaks image and text generation.
+        self.assertIn(
+            browser_profile.IMPERSONATE, {"chrome151", "chrome150", "chrome110"}
+        )
+        self.assertEqual(browser_profile.IMPERSONATE, "chrome" + browser_profile.VERSION)
 
     def test_workers_use_the_shared_identity(self):
         self.assertIs(image_worker.DEFAULT_USER_AGENT, browser_profile.USER_AGENT)

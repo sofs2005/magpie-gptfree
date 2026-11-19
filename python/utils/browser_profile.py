@@ -1,51 +1,100 @@
 """One browser identity for every request the web pipeline makes.
 
-Upstream reads two things that have to agree: the User-Agent and the client
-hints (sec-ch-ua*) that go with it.  They used to disagree — the image and
-text workers said Windows Edge 143, the login worker and sentinel said
-Windows Chrome 145 — so the same account looked like two browsers depending
-on which part of the pipeline touched it.  Everything now says Windows
-Chrome 145.
+Upstream reads three things that have to name the same browser: the
+User-Agent, the client hints (sec-ch-ua*) and the TLS/HTTP2 fingerprint
+curl_cffi's impersonate profile presents.  They used to disagree — the image
+and text workers sent a Windows Edge 143 UA, the login worker and sentinel
+sent Windows Chrome 145, and both sat on curl_cffi's chrome110 profile —
+so one account looked like different browsers depending on which part of
+the pipeline touched it.  g2a argues the same point from the other side
+(internal/service/browser_fingerprint.go): a UA naming a browser the
+fingerprint isn't is a signal no real client produces.
 
-Why the TLS profile stays at chrome110
---------------------------------------
-The obvious next step would be to move the impersonate profile up to match,
-and it does not work: measured against chatgpt.com from the magpie host
-(2026-11-19), every profile from chrome131 up is refused by Cloudflare while
-chrome110 is served.
+Which profile, and why these
+----------------------------
+Not every profile curl_cffi offers is served.  Measured 2026-11-19 against
+chatgpt.com from the magpie host, with the headers below:
 
-    chrome110 + win edge 143      -> 200
-    chrome110 + win chrome 145    -> 200
-    chrome110 + mac chrome 145    -> 200
-    chrome131 + win chrome 145    -> 403
-    chrome142 + win chrome 145    -> 403
-    chrome145 + win chrome 145    -> 403
+    chrome99..chrome131   -> 200  (chrome123 tripped 403 once, not twice)
+    chrome133a,136,142    -> 403
+    chrome145,146         -> 403
+    chrome150             -> 200
+    chrome151             -> 200
+    chrome152             -> 403
 
-So the TLS/HTTP2 fingerprint stays where it demonstrably passes, and the UA
-and client hints move to Chrome 145 — which is what the login worker and
-sentinel already sent, and what g2a sends.  The UA naming a newer build than
-the fingerprint is a real gap (g2a's internal/service/browser_fingerprint.go
-argues against exactly that), but it is the one Cloudflare lets through;
-revisit it when a newer curl_cffi profile answers 200.
+chrome150 and chrome151 are the newest profiles Cloudflare serves, and both
+present the browser they name — chrome151 as Windows Chrome 151, chrome150
+as macOS Chrome 150 — so the UA, the client hints and the TLS/HTTP2
+fingerprint can be one browser with nothing to contradict.  chrome110 is
+the long-standing fallback: older, but served on every run of the matrix.
+
+An earlier reason to stay on chrome110 came from a single matrix run that
+had tripped a temporary block; five repeats of chrome110/150/151/151_macos
+all answered 200, and the matrix has since been re-run twice.
+
+The list below is tried in order against the installed curl_cffi, so an old
+venv (requirements allow >=0.11, which has neither 150 nor 151) still gets a
+profile it knows rather than a session that throws.  Re-run the matrix
+before adding to it: a profile that answers 403 here means image and text
+generation answers 403 to the end user.
 
 One place to change: anything adding a header of its own imports these
 rather than writing the strings again.
 """
 
-# Pinned, not resolved: chrome110 is the newest profile chatgpt.com serves
-# (see the matrix above).  Moving it means re-running that matrix.
-IMPERSONATE = "chrome110"
+from __future__ import annotations
 
-# What the pipeline says it is.  Windows Chrome 145 — the login flow and
-# sentinel already said this; the image and text workers said Edge 143.
-USER_AGENT = (
+_WIN_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36"
 )
-VERSION = "145"
+_MAC_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36"
+)
+
+# (version, platform the profile presents, UA template), best first.  Each
+# entry answered 200 on the matrix above; each UA is the one that profile
+# presents on its own.
+_PROFILES = (
+    ("151", '"Windows"', _WIN_UA),
+    ("150", '"macOS"', _MAC_UA),
+    ("110", '"Windows"', _WIN_UA),
+)
+
+
+def _supported(profile: str) -> bool:
+    """Whether the installed curl_cffi knows this impersonate profile.
+
+    A curl_cffi that can't be imported or introspected is taken at its word:
+    the session then either works or says so loudly.
+    """
+    try:
+        from curl_cffi.requests.impersonate import BrowserType
+    except Exception:
+        return True
+    try:
+        return profile in {b.value for b in BrowserType}
+    except Exception:
+        return True
+
+
+def _resolve() -> tuple[str, str, str]:
+    """(impersonate, user agent, sec-ch-ua-platform) for the installed curl_cffi."""
+    for version, platform, template in _PROFILES:
+        profile = "chrome" + version
+        if _supported(profile):
+            return profile, template.format(v=version), platform
+    version, platform, template = _PROFILES[-1]
+    return "chrome" + version, template.format(v=version), platform
+
+
+IMPERSONATE, USER_AGENT, SEC_CH_UA_PLATFORM = _resolve()
+
+# The version the UA and the client hints both carry, so they cannot drift.
+VERSION = IMPERSONATE[len("chrome"):]
 
 # curl_cffi's impersonate sets the TLS fingerprint only — it sends no
 # sec-ch-ua at all — so these are ours to keep in step with the UA above.
 SEC_CH_UA = f'"Chromium";v="{VERSION}", "Google Chrome";v="{VERSION}", "Not/A)Brand";v="99"'
-SEC_CH_UA_PLATFORM = '"Windows"'
 SEC_CH_UA_MOBILE = "?0"
