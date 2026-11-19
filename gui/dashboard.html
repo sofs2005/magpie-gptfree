@@ -28,6 +28,7 @@
         <button type="button" role="tab" class="tab active" aria-selected="true" data-tab="import">批量导入</button>
         <button type="button" role="tab" class="tab" aria-selected="false" data-tab="pool">我的账号池 <span id="poolCount" class="count">—</span></button>
         <button type="button" role="tab" class="tab" aria-selected="false" data-tab="stats">额度统计</button>
+        <button type="button" role="tab" class="tab" aria-selected="false" data-tab="policy">轮转策略与日志</button>
       </div>
       <section id="importPanel" class="panel" role="tabpanel">
         <div class="section-head"><h2><span class="step">01</span> 批量导入账号</h2>
@@ -189,6 +190,67 @@
             <tbody id="statsRows"></tbody>
           </table>
         </div>
+      </section>
+      <section id="policyPanel" class="panel hidden" role="tabpanel">
+        <div class="section-head">
+          <h2>轮转策略</h2>
+          <div class="pool-actions">
+            <button id="savePolicy" type="button" class="btn primary small">保存策略</button>
+          </div>
+        </div>
+        <p class="muted tiny">决定一次生图请求先试哪个账号。无论选哪种策略，<strong>额度耗尽或正在冷却的账号都会自动排到最后</strong>，不会再有"每次都撞同一个号"的情况。</p>
+        <div id="strategyCards" class="strategy-cards" role="radiogroup" aria-label="轮转策略"></div>
+        <div class="policy-options">
+          <label class="inline-check"><input type="checkbox" id="skipRateLimited">
+            <span>跳过限流账号：额度为 0 或冷却未到期的账号排到队尾</span></label>
+          <label class="inline-check"><input type="checkbox" id="respectPreferredSlot">
+            <span>尊重 Magpie 的首选账号：在 Providers 里设为首选的那个账号优先</span></label>
+        </div>
+        <p id="policyHint" class="muted tiny"></p>
+
+        <div class="section-head with-top">
+          <h2>定时额度巡检</h2>
+          <div class="pool-actions">
+            <button id="runSweep" type="button" class="btn secondary small">立即巡检一次</button>
+          </div>
+        </div>
+        <p class="muted tiny">后台定期向 chatgpt.com 读取每个账号的剩余生图额度（只调用 <code>/conversation/init</code>，<strong>不消耗生图次数</strong>），让号池不再依赖几天前的旧数字。</p>
+        <div class="policy-options">
+          <label class="inline-check"><input type="checkbox" id="sweepEnabled">
+            <span>启用定时巡检</span></label>
+          <label class="inline-check"><input type="checkbox" id="sweepPauseDuringImport">
+            <span>批量导入进行时暂停巡检</span></label>
+        </div>
+        <div class="policy-grid">
+          <label class="proxy-label" for="sweepInterval">
+            <span>巡检间隔（分钟，0 = 只在插件启动时跑一次）</span>
+            <input id="sweepInterval" type="number" min="0" max="1440" step="5" inputmode="numeric">
+          </label>
+          <label class="proxy-label" for="sweepStale">
+            <span>跳过刚检测过的账号（分钟）</span>
+            <input id="sweepStale" type="number" min="5" max="1440" step="5" inputmode="numeric">
+          </label>
+        </div>
+        <p id="sweepHint" class="muted tiny"></p>
+
+        <div class="section-head with-top">
+          <h2>运行日志</h2>
+          <div class="pool-actions">
+            <button id="reloadLogs" type="button" class="btn secondary small">刷新日志</button>
+            <button id="copyLogs" type="button" class="btn secondary small">复制全部</button>
+          </div>
+        </div>
+        <p class="muted tiny">每次账号尝试一行，含账号哈希标签、结果与错误码；<strong>不含邮箱、密码、Token 或 URL</strong>。排查"为什么没换号"直接看这里。</p>
+        <div class="log-toolbar">
+          <label class="inline-check"><input type="checkbox" id="logOnlyFailures"> <span>只看失败</span></label>
+          <select id="logLimit" class="log-limit" aria-label="日志条数">
+            <option value="50">最近 50 条</option>
+            <option value="100" selected>最近 100 条</option>
+            <option value="300">最近 300 条</option>
+            <option value="500">最近 500 条</option>
+          </select>
+        </div>
+        <div id="logView" class="log-view" role="log" aria-live="polite">加载中…</div>
       </section>
       <div id="notice" class="notice hidden" role="status"></div>
     </main>

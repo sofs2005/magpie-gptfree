@@ -775,9 +775,202 @@
     hidden("importPanel", next !== "import");
     hidden("poolPanel", next !== "pool");
     hidden("statsPanel", next !== "stats");
+    hidden("policyPanel", next !== "policy");
     if (next === "pool") loadPool();
     if (next === "stats") loadStats();
+    if (next === "policy") { loadPolicy(); loadLogs(); }
   }
+
+  // --- rotation strategy + scheduled sweep -------------------------------
+  let policyState = null;
+
+  function renderStrategyCards(strategies, selected) {
+    const host = $("strategyCards");
+    host.replaceChildren(...strategies.map((strategy) => {
+      const card = el("button", "strategy-card");
+      card.type = "button";
+      card.dataset.strategy = strategy.id;
+      card.setAttribute("role", "radio");
+      const isOn = strategy.id === selected;
+      card.classList.toggle("selected", isOn);
+      card.setAttribute("aria-checked", isOn ? "true" : "false");
+      const title = el("div", "strategy-name");
+      title.append(el("span", "tick", "✓"), el("span", "", strategy.name));
+      card.append(title, el("div", "strategy-detail", strategy.detail));
+      card.addEventListener("click", () => {
+        host.querySelectorAll(".strategy-card").forEach((node) => {
+          const on = node === card;
+          node.classList.toggle("selected", on);
+          node.setAttribute("aria-checked", on ? "true" : "false");
+        });
+        if (policyState) policyState.settings.rotation.strategy = strategy.id;
+      });
+      return card;
+    }));
+  }
+
+  function sweepHintText(settings, sweep) {
+    const parts = [];
+    parts.push(sweep?.running ? "巡检正在运行…" : "巡检空闲");
+    if (!settings.sweep.enabled) parts.push("已关闭定时巡检");
+    else if (settings.sweep.intervalMinutes === 0) parts.push("只在插件启动时跑一次");
+    else parts.push(`每 ${settings.sweep.intervalMinutes} 分钟检查一次`);
+    parts.push(`跳过 ${settings.sweep.staleAfterMinutes} 分钟内已检测过的账号`);
+    return parts.join(" · ");
+  }
+
+  function applyPolicyToForm(data) {
+    policyState = data;
+    const settings = data.settings;
+    renderStrategyCards(data.strategies || [], settings.rotation.strategy);
+    $("skipRateLimited").checked = settings.rotation.skipRateLimited;
+    $("respectPreferredSlot").checked = settings.rotation.respectPreferredSlot;
+    $("sweepEnabled").checked = settings.sweep.enabled;
+    $("sweepPauseDuringImport").checked = settings.sweep.pauseDuringImport;
+    $("sweepInterval").value = String(settings.sweep.intervalMinutes);
+    $("sweepStale").value = String(settings.sweep.staleAfterMinutes);
+    $("sweepHint").textContent = sweepHintText(settings, data.sweep);
+    const strategy = (data.strategies || []).find((s) => s.id === settings.rotation.strategy);
+    $("policyHint").textContent = strategy
+      ? `当前生效：${strategy.name}。${settings.rotation.skipRateLimited ? "限流账号自动排到队尾。" : "注意：已关闭跳过限流账号，耗尽额度的账号仍可能被尝试。"}`
+      : "";
+  }
+
+  async function loadPolicy() {
+    try {
+      applyPolicyToForm(await api("settings"));
+    } catch (err) {
+      $("policyHint").textContent = "无法读取策略设置：" + err.message;
+    }
+  }
+
+  async function savePolicy() {
+    if (!policyState) return;
+    const next = {
+      rotation: {
+        strategy: policyState.settings.rotation.strategy,
+        skipRateLimited: $("skipRateLimited").checked,
+        respectPreferredSlot: $("respectPreferredSlot").checked,
+      },
+      sweep: {
+        enabled: $("sweepEnabled").checked,
+        pauseDuringImport: $("sweepPauseDuringImport").checked,
+        intervalMinutes: Number($("sweepInterval").value),
+        staleAfterMinutes: Number($("sweepStale").value),
+      },
+    };
+    try {
+      setPolicyBusy(true);
+      const saved = await api("settings", next);
+      applyPolicyToForm(saved);
+      notice("策略已保存，下一次生图请求即按新策略调度。");
+    } catch (err) {
+      notice("保存失败：" + err.message, true);
+    } finally {
+      setPolicyBusy(false);
+    }
+  }
+
+  function setPolicyBusy(next) {
+    $("savePolicy").disabled = next;
+    $("runSweep").disabled = next;
+    $("savePolicy").textContent = next ? "保存中…" : "保存策略";
+  }
+
+  async function runSweepNow() {
+    try {
+      setPolicyBusy(true);
+      $("sweepHint").textContent = "正在巡检全部账号额度…";
+      const summary = await api("sweep/run", {});
+      await loadPolicy();
+      await loadLogs();
+      notice(summary.aborted
+        ? "巡检已中止（批量导入进行中或服务已停止）。"
+        : `巡检完成：检查 ${summary.checked} 个，正常 ${summary.ok || 0}，` +
+          `限流 ${summary.rateLimited || 0}，失败 ${summary.failed || 0}，跳过 ${summary.skipped || 0}。`);
+    } catch (err) {
+      notice("巡检失败：" + err.message, true);
+      $("sweepHint").textContent = "";
+    } finally {
+      setPolicyBusy(false);
+    }
+  }
+
+  // --- event log ---------------------------------------------------------
+  function formatEventTime(iso) {
+    const ms = Date.parse(iso);
+    if (!Number.isFinite(ms)) return "--:--:--";
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:` +
+      `${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function describeEvent(event) {
+    if (event.event === "quota_sweep" || event.event === "quota_sweep_done") {
+      const bits = [];
+      if (event.event === "quota_sweep_done") {
+        bits.push(`巡检结束`);
+        if (event.checked !== undefined) bits.push(`检查 ${event.checked}`);
+        if (event.ok !== undefined) bits.push(`正常 ${event.ok}`);
+        if (event.rateLimited !== undefined) bits.push(`限流 ${event.rateLimited}`);
+        if (event.failed !== undefined) bits.push(`失败 ${event.failed}`);
+        if (event.skipped !== undefined) bits.push(`跳过 ${event.skipped}`);
+      } else {
+        bits.push("巡检单个账号失败");
+        if (event.reason) bits.push(event.reason);
+      }
+      return { level: event.ok === false ? "fail" : "ok", text: bits.join(" · ") };
+    }
+    const bits = [];
+    if (event.ok === true) bits.push("成功");
+    else if (event.rateLimited === true) bits.push("额度耗尽");
+    else if (event.status) bits.push("失败");
+    else bits.push(event.ok === false ? "失败" : "—");
+    if (event.status) bits.push(`HTTP ${event.status}`);
+    if (event.retryAfter) {
+      const minutes = Math.round(Number(event.retryAfter) / 60);
+      bits.push(`冷却 ${minutes >= 60 ? Math.round(minutes / 60) + " 小时" : minutes + " 分钟"}`);
+    }
+    if (event.code) bits.push(event.code);
+    if (event.tried !== undefined) bits.push(`候选 ${event.tried} 个`);
+    const level = event.ok === true ? "ok" : (event.rateLimited === true ? "warn" : "fail");
+    return { level, text: bits.join(" · ") };
+  }
+
+  function renderLogs(events) {
+    const host = $("logView");
+    const onlyFailures = $("logOnlyFailures").checked;
+    const rows = (events || []).filter((event) =>
+      !onlyFailures || event.ok === false || event.rateLimited === true || event.event === "quota_sweep");
+    if (!rows.length) {
+      host.replaceChildren(el("div", "log-empty",
+        onlyFailures ? "没有失败记录 —— 账号一直都能正常出图。" : "还没有日志；发生一次生图或巡检后就会出现。"));
+      return;
+    }
+    host.replaceChildren(...rows.slice().reverse().map((event) => {
+      const info = describeEvent(event);
+      const row = el("div", "log-row");
+      const slot = event.slot ? ` ${event.slot}` : "";
+      row.append(
+        el("span", "log-time", formatEventTime(event.t)),
+        el("span", "log-slot", (event.event === "image_call" ? "生图" : "巡检") + slot),
+        el("span", "log-" + info.level, info.text),
+      );
+      return row;
+    }));
+  }
+
+  async function loadLogs() {
+    try {
+      const limit = $("logLimit").value || "100";
+      const data = await api("logs?limit=" + encodeURIComponent(limit));
+      renderLogs(data.events);
+    } catch (err) {
+      $("logView").replaceChildren(el("div", "log-empty", "无法读取日志：" + err.message));
+    }
+  }
+
   function setup() {
     // Always shown INSIDE Magpie's plugin frame. Choosing a file loads its
     // contents directly into #pasteAccounts so errors can be edited in place.
@@ -868,6 +1061,19 @@
     $("syncProviders")?.addEventListener("click", syncProvidersNow);
     $("refreshStatsQuota")?.addEventListener("click", () => refreshAccounts({ all: true, quotaOnly: true }));
     $("reloadStats")?.addEventListener("click", loadStats);
+    $("savePolicy")?.addEventListener("click", savePolicy);
+    $("runSweep")?.addEventListener("click", runSweepNow);
+    $("reloadLogs")?.addEventListener("click", loadLogs);
+    $("logOnlyFailures")?.addEventListener("change", loadLogs);
+    $("logLimit")?.addEventListener("change", loadLogs);
+    $("copyLogs")?.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText($("logView").innerText);
+        notice("日志已复制到剪贴板。");
+      } catch {
+        notice("复制失败；请手动选中日志文本。", true);
+      }
+    });
     window.addEventListener("focus", () => { loadPendingDraft(); });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) loadPendingDraft();

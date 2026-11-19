@@ -130,8 +130,11 @@ _CONTENT_POLICY_KEYWORDS = (
     "moderation",
     "policy",
     "blocked",
-    "不能生成",
-    "无法生成",
+    # NOTE: bare "不能生成" / "无法生成" used to live here and matched the
+    # Free-plan quota notice ("…暂时不能生成这张图片"), turning an exhausted
+    # account into a fabricated content-policy violation. Real policy replies
+    # always carry 内容政策 / 防护限制 / 违反, so the generic phrases are gone
+    # and quota detection runs first (see _is_quota_exhausted).
     "不能帮助",
     "无法帮助",
     "裸体",
@@ -144,11 +147,26 @@ _CONTENT_POLICY_KEYWORDS = (
     "safety system",
 )
 
-# Said by the model when the account has spent its daily image quota.
-_QUOTA_KEYWORDS = (
-    "图像生成请求上限", "请求上限", "上限将在", "已达到",
-    "request limit", "usage limit", "rate limit", "额度",
+# Markers of the ChatGPT Free/Plus image-generation cap. These arrive as an
+# ordinary assistant message (not HTTP 429), so they must be recognised before
+# anything is treated as a content-policy rejection.
+_QUOTA_EXHAUSTED_MARKERS = (
+    "图像生成请求上限",
+    "图像生成上限",
+    "图片生成请求上限",
+    "已达到 free 套餐",
+    "已达到 free",
+    "用量上限",
+    "额度已用完",
+    "额度用完",
+    "额度已耗尽",
+    "image generation limit",
+    "reached your image",
+    "image generations left",
 )
+
+_RESET_AFTER_RE = re.compile(r"(\d+)\s*(天|小时|分钟|秒)\s*后重置")
+_RESET_UNIT_SECONDS = {"天": 86400, "小时": 3600, "分钟": 60, "秒": 1}
 
 
 class ImageWorkerError(RuntimeError):
@@ -175,6 +193,25 @@ class ImageContentPolicyError(ImageWorkerError):
             http_status=400,
             error_code="content_policy_violation",
             conversation_id=conversation_id,
+        )
+
+
+class ImageQuotaExhaustedError(ImageWorkerError):
+    """The account is out of Free-plan image generations.
+
+    Reported as HTTP 429 / rate_limited (not 400) so the pool fails over to the
+    next account and parks this one until its reset time instead of aborting
+    the whole request.
+    """
+
+    def __init__(self, message: str, conversation_id: str = "", retry_after: int | None = None) -> None:
+        retry_after = retry_after if retry_after is not None else _parse_reset_after_seconds(message)
+        super().__init__(
+            message or "This account has used up its image generation quota.",
+            http_status=429,
+            error_code="rate_limited",
+            conversation_id=conversation_id,
+            retry_after=retry_after,
         )
 
 
@@ -280,48 +317,41 @@ def _is_token_invalid_text(text: str) -> bool:
     )
 
 
+def _is_quota_exhausted(error_msg: str) -> bool:
+    """True when the text is the upstream image-generation cap, not a policy block.
+
+    Checked before _is_content_policy_error() everywhere, because the quota
+    notice shares wording ("暂时不能生成这张图片") with real policy replies.
+    """
+    if not error_msg:
+        return False
+    low = str(error_msg).lower()
+    return any(marker in low for marker in _QUOTA_EXHAUSTED_MARKERS)
+
+
+def _parse_reset_after_seconds(error_msg: str) -> int | None:
+    """Turn "上限将在 23小时 后重置" into seconds so the pool can cool the slot."""
+    if not error_msg:
+        return None
+    match = _RESET_AFTER_RE.search(str(error_msg))
+    if not match:
+        return None
+    try:
+        amount = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    seconds = amount * _RESET_UNIT_SECONDS.get(match.group(2), 0)
+    return seconds if seconds > 0 else None
+
+
 def _is_content_policy_error(error_msg: str) -> bool:
     if not error_msg:
         return False
+    # Quota exhaustion is a rate condition, never a policy rejection.
+    if _is_quota_exhausted(error_msg):
+        return False
     low = error_msg.lower()
     return any(keyword in low for keyword in _CONTENT_POLICY_KEYWORDS)
-
-
-def _quota_retry_after(error_msg: str) -> int | None:
-    """Seconds to wait when the account is out of image quota, else None.
-
-    An account that has spent its daily image quota says so in the model's own
-    words ("你已达到 Free 套餐的图像生成请求上限… 上限将在 23小时 后重置"), and the
-    same reply explains that the GIF tool could not be called. That is not a
-    content-policy refusal: the account is out for the day, so the pool has to
-    move on to the next account instead of failing the request outright.
-    """
-    text = str(error_msg or "")
-    if not text:
-        return None
-    low = text.lower()
-    if not any(keyword in low for keyword in _QUOTA_KEYWORDS):
-        return None
-    hours = re.search(r"(\d+)\s*(?:小时|hours?|h)\b", text)
-    if hours:
-        return min(int(hours.group(1)) * 3600, 86400)
-    minutes = re.search(r"(\d+)\s*(?:分钟|minutes?|min)\b", text)
-    if minutes:
-        return min(int(minutes.group(1)) * 60, 86400)
-    return 3600
-
-
-def _raise_if_quota(error_msg: str, conversation_id: str = "") -> None:
-    wait = _quota_retry_after(error_msg)
-    if wait is None:
-        return
-    raise ImageWorkerError(
-        _sanitize_error_text(error_msg),
-        http_status=429,
-        error_code="rate_limited",
-        conversation_id=conversation_id,
-        retry_after=wait,
-    )
 
 
 def _is_model_text_reply_instead_of_image(message: str) -> bool:
@@ -1755,7 +1785,8 @@ class OpenAIWebImageClient:
             if not file_ids and not sediment_ids:
                 policy_msg = self._find_content_policy_error_in_conversation(conversation)
                 if policy_msg:
-                    _raise_if_quota(policy_msg, conversation_id)
+                    if _is_quota_exhausted(policy_msg):
+                        raise ImageQuotaExhaustedError(policy_msg, conversation_id)
                     raise ImageContentPolicyError(policy_msg, conversation_id)
 
             if file_ids or sediment_ids:
@@ -1773,8 +1804,9 @@ class OpenAIWebImageClient:
             if wait > 0:
                 time.sleep(wait)
 
+        if last_task_error and _is_quota_exhausted(last_task_error):
+            raise ImageQuotaExhaustedError(last_task_error, conversation_id)
         if last_task_error and _is_content_policy_error(last_task_error):
-            _raise_if_quota(last_task_error, conversation_id)
             raise ImageContentPolicyError(last_task_error, conversation_id)
         raise ImagePollTimeoutError(
             f"ChatGPT image polling timed out after {int(timeout_secs)}s",
@@ -1977,16 +2009,22 @@ class OpenAIWebImageClient:
             sediment_ids = list(state.sediment_ids)
             message = state.text.strip()
 
+            # An exhausted Free-plan account answers with a plain message instead
+            # of an image. Detect it before any policy interpretation so the pool
+            # rotates to another account rather than aborting the request.
+            if message and not file_ids and not sediment_ids and _is_quota_exhausted(message):
+                raise ImageQuotaExhaustedError(message, conversation_id)
+
             if message and not file_ids and not sediment_ids and state.blocked:
                 detailed = self._get_detailed_task_error(conversation_id, wait_secs=min(1.0, self.settle_secs))
-                _raise_if_quota(detailed or message, conversation_id)
+                if detailed and _is_quota_exhausted(detailed):
+                    raise ImageQuotaExhaustedError(detailed, conversation_id)
                 raise ImageContentPolicyError(detailed or message, conversation_id)
 
             is_text_reply = bool(message and _is_model_text_reply_instead_of_image(message))
             should_poll = bool(references) or state.turn_use_case == "image gen" or is_text_reply
 
             if message and not file_ids and not sediment_ids and not should_poll:
-                _raise_if_quota(message, conversation_id)
                 if _is_content_policy_error(message):
                     raise ImageContentPolicyError(message, conversation_id)
                 raise ImageWorkerError(
@@ -2002,7 +2040,8 @@ class OpenAIWebImageClient:
             if not file_ids and not sediment_ids and conversation_id and not should_poll:
                 detailed = self._get_detailed_task_error(conversation_id, wait_secs=min(0.5, self.settle_secs))
                 if detailed:
-                    _raise_if_quota(detailed, conversation_id)
+                    if _is_quota_exhausted(detailed):
+                        raise ImageQuotaExhaustedError(detailed, conversation_id)
                     if _is_content_policy_error(detailed):
                         raise ImageContentPolicyError(detailed, conversation_id)
                     raise ImageWorkerError(
@@ -2219,6 +2258,17 @@ def handle_payload(data: Any, *, session: Any = None) -> Dict[str, Any]:
             out_status = 403
         elif status in (400, 422):
             body_text = json.dumps(exc.body, ensure_ascii=False) if isinstance(exc.body, (dict, list)) else str(exc.body)
+            if _is_quota_exhausted(body_text):
+                # The cap can also arrive as a 400 body; report it as a rate
+                # limit so the pool rotates instead of aborting.
+                return {
+                    "ok": False,
+                    "http_status": 429,
+                    "error_code": "rate_limited",
+                    "error": _sanitize_error_text(body_text),
+                    **({"retry_after": _parse_reset_after_seconds(body_text)}
+                       if _parse_reset_after_seconds(body_text) else {}),
+                }
             if _is_content_policy_error(body_text):
                 code = "content_policy_violation"
             else:

@@ -182,28 +182,6 @@ class ImageWorkerUnitTests(unittest.TestCase):
         _, _, _, rgba2 = image_worker._decode_png_rgba(out2)
         self.assertEqual(list(rgba2[3::4]), [42, 42, 42, 42])
 
-    def test_quota_exhaustion_is_rate_limited_not_content_policy(self):
-        # What the model answers on an account that spent its daily image
-        # quota. It mentions being unable to make a GIF, which the content
-        # policy keywords used to swallow — and a content-policy refusal ends
-        # the request instead of moving on to the next pooled account.
-        message = (
-            "你已达到 Free 套餐的图像生成请求上限。上限将在 23小时 后重置，"
-            "届时可创建更多图像。 这次未能调用 GIF 动画生成工具，因此暂时无法生成真正的多帧 GIF。"
-        )
-        self.assertEqual(image_worker._quota_retry_after(message), 23 * 3600)
-        with self.assertRaises(image_worker.ImageWorkerError) as caught:
-            image_worker._raise_if_quota(message, "conv-1")
-        self.assertEqual(caught.exception.http_status, 429)
-        self.assertEqual(caught.exception.error_code, "rate_limited")
-        self.assertEqual(caught.exception.retry_after, 23 * 3600)
-        self.assertEqual(caught.exception.conversation_id, "conv-1")
-
-        # A real refusal keeps its own meaning.
-        refusal = "这张图违反了内容政策，无法生成"
-        self.assertIsNone(image_worker._quota_retry_after(refusal))
-        self.assertTrue(image_worker._is_content_policy_error(refusal))
-
     def test_image_model_2_6_support_gif_and_rejects_unknown_models(self):
         self.assertEqual(image_worker.normalize_image_model("gpt-image-2.6"), "gpt-image-2.6")
         # Flare and Sunburst asked for exactly what 2.6 asks for: aliases now.
@@ -443,6 +421,68 @@ class ImageWorkerUnitTests(unittest.TestCase):
         )
         self.assertEqual(res_policy["http_status"], 400)
         self.assertEqual(res_policy["error_code"], "content_policy_violation")
+
+    def test_quota_exhaustion_is_a_rate_limit_not_a_content_policy_rejection(self):
+        """The Free-plan cap is assistant text, not an HTTP 429.
+
+        It shares wording ("暂时不能生成这张图片") with real policy refusals, so it
+        used to be misclassified as content_policy_violation -> HTTP 400, which
+        the pool treats as fatal (no failover) and never parks the account.
+        """
+        quota_notice = (
+            "你已达到 Free 套餐的图像生成请求上限。上限将在 23小时 后重置，届时可创建更多图像。"
+            " 目前无法调用图像生成工具，因此暂时不能生成这张 1024×1024 图片。"
+        )
+
+        # Pure classifier behaviour.
+        self.assertTrue(image_worker._is_quota_exhausted(quota_notice))
+        self.assertFalse(image_worker._is_content_policy_error(quota_notice))
+        self.assertEqual(image_worker._parse_reset_after_seconds(quota_notice), 82800)
+
+        # Real content-policy replies must stay policy and must not be quotas.
+        for policy_text in (
+            "非常抱歉，生成的图片可能违反了我们的内容政策。如果你认为此判断有误，请重试或修改提示语。",
+            "非常抱歉，生成的图片可能违反了关于裸露、色情或情色内容的防护限制。",
+            "非常抱歉，该提示可能违反了关于与第三方内容相似性的防护限制。",
+        ):
+            self.assertTrue(image_worker._is_content_policy_error(policy_text), policy_text)
+            self.assertFalse(image_worker._is_quota_exhausted(policy_text), policy_text)
+
+        # End-to-end: the cap must surface as 429 rate_limited with retry_after.
+        def quota_handler(m, u, k):
+            if m == "GET" and u == "https://chatgpt.com/":
+                return FakeResponse(text="<html></html>")
+            if m == "POST" and "prepare" in u:
+                return FakeResponse(json_data={"prepare_token": "p", "conduit_token": "c"})
+            if m == "POST" and "finalize" in u:
+                return FakeResponse(json_data={"token": "t"})
+            if m == "POST" and u.endswith("/f/conversation"):
+                payload = json.dumps(
+                    {
+                        "conversation_id": "conv-q",
+                        "message": {
+                            "author": {"role": "assistant"},
+                            "channel": "final",
+                            "content": {"content_type": "text", "parts": [quota_notice]},
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                return FakeResponse(lines=["data: " + payload, "data: [DONE]"])
+            if m == "GET" and u.endswith("/backend-api/tasks"):
+                return FakeResponse(json_data={"tasks": []})
+            if m == "PATCH":
+                return FakeResponse(json_data={})
+            raise AssertionError(f"Unexpected call: {m} {u}")
+
+        res_quota = image_worker.handle_payload(
+            {"action": "generate_image", "access_token": "tok", "prompt": "a cat",
+             "initial_wait_secs": 0, "settle_secs": 0},
+            session=FakeSession(quota_handler),
+        )
+        self.assertEqual(res_quota["http_status"], 429)
+        self.assertEqual(res_quota["error_code"], "rate_limited")
+        self.assertEqual(res_quota.get("retry_after"), 82800)
 
     def test_estuary_download_isolates_headers_and_deduplicates_same_asset_id(self):
         output_png = _make_rgba_png(2, 2, [(9, 8, 7, 255)] * 4)

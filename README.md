@@ -6,7 +6,7 @@
 
 [![Magpie](https://img.shields.io/badge/Magpie-Plugin-3177d9)](https://github.com/yetone/magpie)
 [![license](https://img.shields.io/badge/license-MIT-16845c)](./package.json)
-[![version](https://img.shields.io/badge/version-0.7.5-a36207)](./package.json)
+[![version](https://img.shields.io/badge/version-0.8.0-a36207)](./package.json)
 
 ---
 

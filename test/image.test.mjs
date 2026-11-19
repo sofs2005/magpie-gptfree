@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CODEX_BASE, discoverPoolModels, poolFetch, probeAccountImageQuota, refreshPoolAccount,
+  setPoolEventsFile,
 } from "../lib/codex-pool.mjs";
 import {
   IMAGE_MODEL_ID,
@@ -19,7 +20,7 @@ import {
   supportsGifOutput,
 } from "../lib/chatgpt-web-image.mjs";
 import {
-  createInMemoryStatsStore, isAccountRateLimited, readPoolStats, recordQuotaCheck,
+  createInMemoryStatsStore, isAccountRateLimited, readPoolStats, recordImageCall, recordQuotaCheck,
   sanitizeStatsMessage, summarizePoolStats,
 } from "../lib/pool-stats.mjs";
 import { accountSlotTag, buildSlotAuthBody } from "../lib/pool-connection.mjs";
@@ -289,8 +290,200 @@ test("content policy refusal (400) stops immediately without burning remaining p
   assert.equal(json.error.code, "content_policy_violation");
 });
 
-test("GPTFreePoolPlugin loader wires poolSlot into poolFetch for /images/edits", async () => {
-  const plug = await GPTFreePoolPlugin();
+/**
+ * The Free-plan image cap arrives as ordinary assistant text ("你已达到 Free 套餐
+ * 的图像生成请求上限…暂时不能生成这张图片"). It shares wording with real policy
+ * replies, so it used to be reported as content_policy_violation — a fatal 400 —
+ * which stopped failover and left the exhausted account leading the queue.
+ */
+const QUOTA_NOTICE =
+  "你已达到 Free 套餐的图像生成请求上限。上限将在 23小时 后重置，届时可创建更多图像。" +
+  " 目前无法调用图像生成工具，因此暂时不能生成这张 1024×1024 图片。";
+
+test("image quota exhaustion (429) fails over to the next pooled account", async () => {
+  const acc1 = { email: "a@example.com", password: "p", totp: seed, accessToken: jwt(3600, "a@example.com") };
+  const acc2 = { email: "b@example.com", password: "p", totp: seed, accessToken: jwt(3600, "b@example.com") };
+  // Stub by call order: account rotation is module-global, so which account is
+  // tried first depends on prior tests.
+  const outcomes = [];
+  let calls = 0;
+
+  const res = await poolFetch(CODEX_BASE + "/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-image-2", prompt: "a cat" }),
+  }, {
+    read: async () => [acc1, acc2],
+    statsFile: null,
+    runWorker: async () => {
+      calls++;
+      if (calls === 1) {
+        return {
+          ok: false,
+          http_status: 429,
+          error_code: "rate_limited",
+          error: QUOTA_NOTICE,
+          retry_after: 82800,
+        };
+      }
+      return { ok: true, created: 1, data: [{ b64_json: "AAA", media_type: "image/png" }] };
+    },
+    onAccountResult: (evt) => outcomes.push({
+      email: evt.account.email, rateLimited: evt.rateLimited, httpStatus: evt.httpStatus,
+    }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2, "the second account must be tried");
+});
+
+test("a quota notice smuggled through a 400 is reclassified as a rate limit", async () => {
+  const acc1 = { email: "a@example.com", password: "p", totp: seed, accessToken: jwt(3600, "a@example.com") };
+  const acc2 = { email: "b@example.com", password: "p", totp: seed, accessToken: jwt(3600, "b@example.com") };
+  let calls = 0;
+
+  const res = await poolFetch(CODEX_BASE + "/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-image-2", prompt: "a cat" }),
+  }, {
+    read: async () => [acc1, acc2],
+    statsFile: null,
+    runWorker: async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, http_status: 400, error_code: "content_policy_violation", error: QUOTA_NOTICE };
+      }
+      return { ok: true, created: 1, data: [{ b64_json: "AAA", media_type: "image/png" }] };
+    },
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal(calls, 2, "a quota 400 must not abort the pool");
+});
+
+test("quota exhaustion is reported to the pool as rate-limited with its reset time", async () => {
+  const acc1 = { email: "a@example.com", password: "p", totp: seed, accessToken: jwt(3600, "a@example.com") };
+  const acc2 = { email: "b@example.com", password: "p", totp: seed, accessToken: jwt(3600, "b@example.com") };
+  const outcomes = [];
+  let calls = 0;
+
+  const out = await executeWebImageGeneration({
+    accounts: [acc1, acc2],
+    request: { prompt: "a cat", model: "gpt-image-2", n: 1 },
+    runWorker: async () => {
+      calls++;
+      if (calls === 1) {
+        // A worker that still reports the cap as 400 must be reclassified.
+        return { ok: false, http_status: 400, error_code: "content_policy_violation", error: QUOTA_NOTICE };
+      }
+      return { ok: true, created: 1, data: [{ b64_json: "AAA", media_type: "image/png" }] };
+    },
+    onAccountResult: (evt) => outcomes.push({
+      rateLimited: evt.rateLimited, httpStatus: evt.httpStatus, retryAfter: evt.retryAfter,
+    }),
+  });
+
+  assert.equal(out.data.length, 1);
+  assert.equal(outcomes.length, 2);
+  assert.equal(outcomes[0].rateLimited, true);
+  assert.equal(outcomes[0].httpStatus, 429);
+  // "23小时 后重置" must be parsed so the account is parked for that long.
+  assert.equal(outcomes[0].retryAfter, 82800);
+});
+
+test("a genuine content-policy 400 still stops without burning the remaining accounts", async () => {
+  const acc1 = { email: "a@example.com", password: "p", totp: seed, accessToken: jwt(3600, "a@example.com") };
+  const acc2 = { email: "b@example.com", password: "p", totp: seed, accessToken: jwt(3600, "b@example.com") };
+  let workerCalls = 0;
+
+  const res = await poolFetch(CODEX_BASE + "/images/generations", {
+    method: "POST",
+    body: JSON.stringify({ model: "gpt-image-2", prompt: "blocked prompt" }),
+  }, {
+    read: async () => [acc1, acc2],
+    statsFile: null,
+    runWorker: async () => {
+      workerCalls++;
+      return {
+        ok: false,
+        http_status: 400,
+        error_code: "content_policy_violation",
+        error: "非常抱歉，生成的图片可能违反了我们的内容政策。",
+      };
+    },
+  });
+
+  assert.equal(res.status, 400);
+  assert.equal(workerCalls, 1);
+});
+
+test("a rate-limited account is parked until its reset instead of leading the queue", async () => {
+  const store = createInMemoryStatsStore();
+  const tag = accountSlotTag("a@example.com");
+  store.state.accounts[tag] = {
+    imageQuota: 17, hasImageLimit: true, planType: "free", limitedUntil: null,
+  };
+
+  // No retry_after at all: the account must still receive a cool-down, or it
+  // stays "available" and every request hits it first.
+  await recordImageCall(
+    { email: "a@example.com", success: false, rateLimited: true, retryAfter: null, error: QUOTA_NOTICE },
+    { statsStore: store },
+  );
+  const noRetry = await readPoolStats({ statsStore: store });
+  assert.equal(noRetry.accounts[tag].imageQuota, 0);
+  assert.equal(isAccountRateLimited("a@example.com", noRetry), true);
+
+  // An explicit reset time is honoured.
+  await recordImageCall(
+    { email: "a@example.com", success: false, rateLimited: true, retryAfter: 82800 },
+    { statsStore: store },
+  );
+  const withRetry = await readPoolStats({ statsStore: store });
+  const seconds = (Date.parse(withRetry.accounts[tag].limitedUntil) - Date.now()) / 1000;
+  assert.ok(Math.abs(seconds - 82800) < 10, `expected ~82800s, got ${seconds}`);
+
+  // Once the reset passes, the slot is usable again.
+  const later = Date.now() + 24 * 3600 * 1000;
+  assert.equal(isAccountRateLimited("a@example.com", withRetry, { nowMs: later }), false);
+});
+
+test("pool events log records the attempt without leaking emails or tokens", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gptfree-events-"));
+  const eventsFile = join(dir, "pool-events.jsonl");
+  setPoolEventsFile(eventsFile);
+  try {
+    const acc1 = { email: "person@example.com", password: "p", totp: seed, accessToken: jwt(3600, "person@example.com") };
+    const acc2 = { email: "other@example.com", password: "p", totp: seed, accessToken: jwt(3600, "other@example.com") };
+
+    await poolFetch(CODEX_BASE + "/images/generations", {
+      method: "POST",
+      body: JSON.stringify({ model: "gpt-image-2", prompt: "a cat" }),
+    }, {
+      read: async () => [acc1, acc2],
+      statsFile: null,
+      runWorker: async () => ({
+        ok: false, http_status: 429, error_code: "rate_limited",
+        error: QUOTA_NOTICE, retry_after: 82800,
+      }),
+    });
+
+    const text = await readFile(eventsFile, "utf8");
+    const lines = text.trim().split("\n").map((l) => JSON.parse(l));
+    assert.ok(lines.length >= 1, "expected at least one event");
+    assert.equal(lines[0].event, "image_call");
+    assert.equal(lines[0].rateLimited, true);
+    assert.equal(lines[0].status, 429);
+    assert.ok(lines[0].slot.startsWith("s"), "slot should be the hashed tag");
+    // Nothing identifying may reach disk.
+    assert.ok(!text.includes("@"), "log must not contain email addresses");
+    assert.ok(!text.includes("eyJ"), "log must not contain tokens");
+  } finally {
+    setPoolEventsFile(null);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("GPTFreePoolPlugin loader wires poolSlot into poolFetch for /images/edits", async () => {  const plug = await GPTFreePoolPlugin();
   const auth = buildSlotAuthBody("slot@example.com");
   const loaderOpts = await plug.auth.loader(async () => auth);
   assert.equal(loaderOpts.baseURL, CODEX_BASE);

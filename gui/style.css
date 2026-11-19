@@ -201,3 +201,30 @@ footer { text-align: center; margin-top: 18px; color: var(--muted); font-size: 1
 @media (prefers-reduced-motion: reduce) {
   .dropzone, #progressFill { transition: none }
 }
+
+/* --- rotation strategy, scheduled sweep and event log ------------------ */
+.strategy-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0 14px }
+.strategy-card { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 13px 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; transition: border-color .15s ease, background .15s ease }
+.strategy-card:hover { border-color: var(--accent) }
+.strategy-card.selected { border-color: var(--accent); background: var(--accent-weak) }
+.strategy-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+.strategy-name { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; margin-bottom: 6px }
+.strategy-name .tick { color: var(--accent); opacity: 0 }
+.strategy-card.selected .strategy-name .tick { opacity: 1 }
+.strategy-detail { color: var(--muted); font-size: 12px; line-height: 1.55 }
+.policy-options { display: flex; flex-direction: column; gap: 9px; margin: 12px 0 }
+.policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 12px 0 }
+.policy-grid .proxy-label { margin: 0 }
+.policy-grid input[type="number"] { width: 100% }
+.log-toolbar { display: flex; align-items: center; gap: 14px; margin: 12px 0 10px; flex-wrap: wrap }
+.log-limit { border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; font-size: 12px; padding: 6px 9px }
+.log-view { border: 1px solid var(--line); border-radius: 9px; background: var(--card); max-height: 420px; overflow: auto; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; line-height: 1.75 }
+.log-row { display: flex; gap: 9px; padding: 3px 0; border-bottom: 1px dashed var(--line); white-space: nowrap }
+.log-row:last-child { border-bottom: 0 }
+.log-time { color: var(--muted); flex: 0 0 auto }
+.log-slot { color: var(--muted); flex: 0 0 auto }
+.log-ok { color: var(--good) }
+.log-fail { color: var(--bad) }
+.log-warn { color: var(--warn) }
+.log-code { color: var(--muted) }
+.log-empty { color: var(--muted); text-align: center; padding: 22px 0 }
