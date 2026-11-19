@@ -33,21 +33,29 @@ try:
 except ImportError:
     requests = None
 
+from utils.browser_profile import (
+    IMPERSONATE,
+    SEC_CH_UA as DEFAULT_SEC_CH_UA,
+    SEC_CH_UA_MOBILE,
+    SEC_CH_UA_PLATFORM,
+    USER_AGENT as DEFAULT_USER_AGENT,
+)
 from utils.turnstile import solve_turnstile_token
 from utils.web_pow import (
     DEFAULT_POW_SCRIPT,
     build_legacy_requirements_token,
     build_proof_token,
     parse_pow_resources,
+    parse_web_build_number,
 )
 
+# Fallbacks for a bootstrap that hasn't answered yet, or answered without
+# them.  Once it does answer, _bootstrap takes both from that same page: a
+# header naming one build while the PoW payload names another is a
+# contradiction upstream can read (g2a's refreshBuildIdentifiers learned the
+# same on the other side of the fence).
 DEFAULT_CLIENT_VERSION = "prod-a194cd50d4416d3c0b47c740f206b12ce60f5887"
 DEFAULT_CLIENT_BUILD_NUMBER = "6708908"
-DEFAULT_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
-)
-DEFAULT_SEC_CH_UA = '"Microsoft Edge";v="143", "Chromium";v="143", "Not A(Brand";v="24"'
 
 MAX_STDIN_BYTES = 48 * 1024 * 1024
 MAX_INPUT_IMAGES = 10
@@ -973,6 +981,10 @@ class OpenAIWebImageClient:
         self.session_id = str(uuid.uuid4())
         self.pow_script_sources: list[str] = []
         self.pow_data_build = ""
+        # What the headers say about the build this session is talking to;
+        # _bootstrap aligns both with the page it lands on.
+        self.client_version = DEFAULT_CLIENT_VERSION
+        self.client_build_number = DEFAULT_CLIENT_BUILD_NUMBER
         self.poll_timeout_secs = max(0.05, float(poll_timeout_secs))
         self.initial_wait_secs = max(0.0, float(initial_wait_secs))
         self.poll_interval_secs = max(0.05, float(poll_interval_secs))
@@ -991,7 +1003,7 @@ class OpenAIWebImageClient:
                     error_code="dependencies_missing",
                 )
             self.proxy_url = resolve_proxy(proxy)
-            session_kwargs: Dict[str, Any] = {"impersonate": "chrome110", "verify": True}
+            session_kwargs: Dict[str, Any] = {"impersonate": IMPERSONATE, "verify": True}
             if self.proxy_url:
                 session_kwargs["proxy"] = self.proxy_url
             self.session = requests.Session(**session_kwargs)
@@ -1006,16 +1018,16 @@ class OpenAIWebImageClient:
             "Pragma": "no-cache",
             "Priority": "u=1, i",
             "Sec-Ch-Ua": DEFAULT_SEC_CH_UA,
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Mobile": SEC_CH_UA_MOBILE,
+            "Sec-Ch-Ua-Platform": SEC_CH_UA_PLATFORM,
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
             "OAI-Device-Id": self.device_id,
             "OAI-Session-Id": self.session_id,
             "OAI-Language": "zh-CN",
-            "OAI-Client-Version": DEFAULT_CLIENT_VERSION,
-            "OAI-Client-Build-Number": DEFAULT_CLIENT_BUILD_NUMBER,
+            "OAI-Client-Version": self.client_version,
+            "OAI-Client-Build-Number": self.client_build_number,
             "Authorization": f"Bearer {self.access_token}",
         }
 
@@ -1050,8 +1062,8 @@ class OpenAIWebImageClient:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Sec-Ch-Ua": DEFAULT_SEC_CH_UA,
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua-Mobile": SEC_CH_UA_MOBILE,
+            "Sec-Ch-Ua-Platform": SEC_CH_UA_PLATFORM,
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
@@ -1209,9 +1221,29 @@ class OpenAIWebImageClient:
             timeout=30,
         )
         self._ensure_ok(response, "bootstrap")
-        self.pow_script_sources, self.pow_data_build = parse_pow_resources(getattr(response, "text", "") or "")
+        html = getattr(response, "text", "") or ""
+        self.pow_script_sources, self.pow_data_build = parse_pow_resources(html)
         if not self.pow_script_sources:
             self.pow_script_sources = [DEFAULT_POW_SCRIPT]
+        self._align_build_identity(html)
+
+    def _align_build_identity(self, html: str) -> None:
+        """Point the client-version headers at the build this page came from.
+
+        Upstream keeps several builds behind the same edge: the page hands out
+        its build in the PoW payload (data-build) and in statsig
+        (web_build_number), and a request whose headers still name the
+        compiled-in constant would say one build while its own proof of work
+        says another.  Each value is taken only when the page actually gave
+        it, so a page that changed shape leaves the previous one in place.
+        """
+        if self.pow_data_build:
+            self.client_version = self.pow_data_build
+        build = parse_web_build_number(html)
+        if build:
+            self.client_build_number = build
+        self._base_headers["OAI-Client-Version"] = self.client_version
+        self._base_headers["OAI-Client-Build-Number"] = self.client_build_number
 
     def _get_chat_requirements(self) -> ChatRequirements:
         base = "/backend-api/sentinel/chat-requirements"
@@ -1824,7 +1856,7 @@ class OpenAIWebImageClient:
                 dl_headers["Referer"] = self.base_url + "/"
 
             if self._owns_session and requests is not None:
-                dl_kwargs: Dict[str, Any] = {"impersonate": "chrome110", "verify": True}
+                dl_kwargs: Dict[str, Any] = {"impersonate": IMPERSONATE, "verify": True}
                 if getattr(self, "proxy_url", ""):
                     dl_kwargs["proxy"] = self.proxy_url
                 dl_session = requests.Session(**dl_kwargs)

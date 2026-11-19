@@ -11,6 +11,13 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
+from utils.browser_profile import (
+    SEC_CH_UA as DEFAULT_SENTINEL_SEC_CH_UA,
+    SEC_CH_UA_MOBILE,
+    SEC_CH_UA_PLATFORM,
+    USER_AGENT as DEFAULT_SENTINEL_USER_AGENT,
+)
+
 if TYPE_CHECKING:
     from curl_cffi.requests import Session
 
@@ -85,12 +92,8 @@ class SentinelTokenGenerator:
 
 
 # ── 默认 User-Agent 和 sec-ch-ua ──────────────────────────────
-DEFAULT_SENTINEL_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/145.0.0.0 Safari/537.36"
-)
-DEFAULT_SENTINEL_SEC_CH_UA = '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"'
+# 一套身份：UA、client hints、curl_cffi 的 TLS 指纹（utils/browser_profile.py）
+# 必须指向同一个浏览器，否则就是真实客户端不会产生的组合。
 
 
 def build_sentinel_token(
@@ -128,8 +131,8 @@ def build_sentinel_token(
             "Origin": "https://sentinel.openai.com",
             "User-Agent": ua,
             "sec-ch-ua": ch_ua,
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
+            "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
+            "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
         },
         timeout=20,
         verify=False,

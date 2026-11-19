@@ -44,6 +44,17 @@ try:
 except ImportError:
     build_sentinel_token = None
 
+# One identity for the whole web pipeline: the UA, the client hints and the
+# TLS profile curl_cffi presents (utils/browser_profile.py).  The login flow
+# and the workers that later use the token must look like the same browser.
+from utils.browser_profile import (
+    IMPERSONATE,
+    SEC_CH_UA,
+    SEC_CH_UA_MOBILE,
+    SEC_CH_UA_PLATFORM,
+    USER_AGENT,
+)
+
 
 
 
@@ -104,9 +115,9 @@ def login_with_password_and_totp(email: str, password: str, totp_secret: str = "
     platform_auth0_client = "eyJuYW1lIjoiYXV0aDAtc3BhLWpzIiwidmVyc2lvbiI6IjEuMjEuMCJ9"
     platform_oauth_client_id = "app_2SKx67EdpoN0G6j64rFvigXD"
     platform_oauth_redirect_uri = "https://platform.openai.com/auth/callback"
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+    user_agent = USER_AGENT
 
-    session_kwargs = {"impersonate": "chrome110", "verify": False}
+    session_kwargs = {"impersonate": IMPERSONATE, "verify": False}
     proxy_url = resolve_proxy(proxy)
     if proxy_url:
         session_kwargs["proxy"] = proxy_url
@@ -154,9 +165,9 @@ def login_with_password_and_totp(email: str, password: str, totp_secret: str = "
         "origin": auth_base,
         "priority": "u=1, i",
         "user-agent": user_agent,
-        "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
@@ -266,9 +277,9 @@ def login_with_password_and_totp(email: str, password: str, totp_secret: str = "
         "pragma": "no-cache",
         "priority": "u=1, i",
         "referer": f"{platform_base}/",
-        "sec-ch-ua": '"Chromium";v="145", "Google Chrome";v="145", "Not/A)Brand";v="99"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": SEC_CH_UA_MOBILE,
+        "sec-ch-ua-platform": SEC_CH_UA_PLATFORM,
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-site",

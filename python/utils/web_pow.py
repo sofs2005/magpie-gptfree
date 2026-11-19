@@ -54,6 +54,22 @@ def parse_pow_resources(html_content: str) -> tuple[list[str], str]:
     return script_sources, data_build
 
 
+# web_build_number is what OAI-Client-Build-Number carries.  It sits in the
+# statsig payload inside an inline script, JSON-escaped, so both the escaped
+# and the plain quote appear — hence the optional backslash and quote.
+_WEB_BUILD_NUMBER = re.compile(r"""web_build_number\\?["']?\s*:\s*["']?([0-9]+)""")
+
+
+def parse_web_build_number(html_content: str) -> str:
+    """The statsig web_build_number from a bootstrap page, "" when absent.
+
+    Callers keep the number they had when this says nothing: a page that
+    changed shape must not blank the header it feeds.
+    """
+    match = _WEB_BUILD_NUMBER.search(html_content or "")
+    return match.group(1) if match else ""
+
+
 def _legacy_parse_time() -> str:
     now = datetime.now(timezone(timedelta(hours=-5)))
     return now.strftime("%a %b %d %Y %H:%M:%S") + " GMT-0500 (Eastern Standard Time)"
