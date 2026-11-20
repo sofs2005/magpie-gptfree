@@ -55,8 +55,32 @@ test("vault keeps sensitive fields encrypted, updates and removes records", asyn
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("unexpired JWT is only admitted after real Codex model probe", async () => {
-  let requested = "";
+test("an OAuth record keeps its refresh token and how it signed in", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gptfree-oauth-"));
+  try {
+    const record = {
+      email: "b@example.com", password: "", totp: "",
+      accessToken: jwt(3600),
+      refreshToken: "rt-" + "x".repeat(48),
+      idToken: jwt(3600),
+      authType: "oauth", kind: "oauth", planType: "free",
+    };
+    await upsertPool(record, { root });
+    const [row] = await listPool({ root });
+    // renewAccount reads this. Without it an OAuth account has nothing to
+    // refresh with and can only be signed in again, and the page's authType
+    // inference sees no refresh token so it never shows 网页授权.
+    assert.equal(row.refreshToken, record.refreshToken);
+    assert.equal(row.idToken, record.idToken);
+    assert.equal(row.authType, "oauth");
+    assert.equal(row.planType, "free");
+    // and it is still encrypted at rest
+    const encrypted = await readFile(join(root, "pool.enc.json"), "utf8");
+    assert.equal(encrypted.includes(record.refreshToken), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("unexpired JWT is only admitted after real Codex model probe", async () => {  let requested = "";
   const token = jwt(3600);
   const success = await verifyAccessToken(token, {
     expectedEmail: "a@example.com",
