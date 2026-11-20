@@ -161,8 +161,9 @@ test("Magpie provider still exposes its native in-app import entry", async () =>
   const config = { provider: {} };
   await plug.config(config);
   assert("gptfree-pool" in config.provider);
-  assert.equal(plug.auth.methods.length, 1);
+  assert.equal(plug.auth.methods.length, 2);
   assert.equal(plug.auth.methods[0].type, "oauth");
+  assert.equal(plug.auth.methods[1].type, "oauth");
 });
 
 test("runBatch invokes checkQuota best-effort after saving & reporting progress without failing batch", async () => {

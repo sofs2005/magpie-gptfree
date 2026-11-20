@@ -306,7 +306,7 @@ test("pool plugin exposes provider and keyless sign-in", async () => {
   await hooks.config(config);
   assert.equal(config.provider["gptfree-pool"].api, CODEX_BASE);
   assert.equal(config.provider["gptfree-pool"].npm, "@ai-sdk/openai");
-  assert.equal(hooks.auth.methods.length, 1); assert.equal(hooks.auth.methods[0].type, "oauth"); // OAuth URL-less native OS file import
+  assert.equal(hooks.auth.methods.length, 2); assert.equal(hooks.auth.methods[0].type, "oauth"); assert.equal(hooks.auth.methods[1].type, "oauth"); // Browser OAuth + native OS file import
 });
 
 test("expired-token reauthentication uses the same DSH HTTP path, with no browser", async () => {

@@ -581,6 +581,9 @@
       const q = quotaBadgeInfo(account);
       const nameTd = el("td");
       nameTd.append(el("strong", "", account.slotLabel || account.email));
+      if (account.priority) {
+        nameTd.append(" ", el("span", "pill priority", "优先"));
+      }
       tr.append(nameTd);
 
       const planTd = el("td");
@@ -633,23 +636,33 @@
       const quotaSeg = qs.checked > 0
         ? ` · 生图可用 ${qs.active ?? 0} · 限流 ${qs.limited ?? 0} · 剩余额度 ${qs.totalQuota ?? 0}`
         : ` · 生图额度待检测`;
+      const priorityCount = data.priorityCount ?? data.accounts.filter((a) => a.priority).length;
+      const prioritySeg = priorityCount > 0
+        ? ` · 优先号池 ${priorityCount}`
+        : "";
       $("poolSummary").textContent =
-        `共 ${summary.total} 个入池账号 · 有效 ${summary.valid} · 待续期/异常 ${summary.needsRenew}${quotaSeg}`;
+        `共 ${summary.total} 个入池账号 · 有效 ${summary.valid} · 待续期/异常 ${summary.needsRenew}${prioritySeg}${quotaSeg}`;
     } else {
       $("poolSummary").textContent = "号池暂无账号 · 请先导入账号";
     }
     const list = $("poolList");
     list.replaceChildren();
     if (!data.accounts.length) {
-      list.append(el("div", "empty", "独立号池暂无账号。请在「批量导入」选择 TXT 文件或粘贴账号批量导入。"));
+      list.append(el("div", "empty", "独立号池暂无账号。请在「批量导入」进行网页登录授权或批量导入 TXT 账号。"));
       setPoolBusyState(poolBusy);
       return;
     }
     for (const account of data.accounts) {
-      const item = el("div", "account-row");
+      const item = el("div", "account-row" + (account.priority ? " is-priority" : ""));
       const left = el("div", "account-main");
       const head = el("div", "account-head");
       head.append(el("strong", "", account.slotLabel || account.email));
+      if (account.priority) {
+        head.append(el("span", "pill priority", "优先"));
+      }
+      if (account.authType === "oauth") {
+        head.append(el("span", "pill oauth", "网页授权"));
+      }
       // "待请求确认" is what the local JWT check can say on its own: not
       // expired, never seen by the upstream (credentials.mjs says as much).
       // Once a generation has gone through on this token, it has been
@@ -690,6 +703,34 @@
       side.append(quotaPill);
 
       const controls = el("div", "account-buttons");
+      const priorityLabel = document.createElement("label");
+      priorityLabel.className = "priority-switch";
+      priorityLabel.title = "开启后该账号将加入优先号池，生图与对话请求会优先调度";
+      const priorityInput = document.createElement("input");
+      priorityInput.type = "checkbox";
+      priorityInput.checked = account.priority === true;
+      priorityInput.setAttribute("aria-label", "优先使用该账号");
+      priorityInput.addEventListener("change", async () => {
+        const nextPriority = priorityInput.checked;
+        priorityLabel.classList.add("busy");
+        priorityInput.disabled = true;
+        try {
+          await api("priority", { id: account.id, priority: nextPriority });
+          await loadPool();
+          notice(nextPriority ? "已开启优先使用，该账号已加入优先号池" : "已关闭优先使用，该账号已移出优先号池");
+        } catch (err) {
+          priorityInput.checked = !nextPriority;
+          notice("更新优先状态失败：" + err.message, true);
+        } finally {
+          priorityLabel.classList.remove("busy");
+          priorityInput.disabled = false;
+        }
+      });
+      priorityLabel.append(
+        priorityInput,
+        el("span", "switch-track", ""),
+        el("span", "switch-label", "优先使用"),
+      );
       const refresh = el("button", "btn secondary small", "检测/刷新");
       refresh.type = "button";
       refresh.disabled = poolBusy || checkingRows.has(account.id);
@@ -731,18 +772,34 @@
         }
         catch (err) { notice(err.message, true); remove.disabled = false; }
       });
-      controls.append(refresh, remove);
+      controls.append(priorityLabel, refresh, remove);
       side.append(controls);
       item.append(side);
       list.append(item);
     }
     setPoolBusyState(poolBusy);
   }
+  let poolSweepRefreshTimer = null;
+  let lastPoolRefreshAt = 0;
+  function scheduleSweepFollowup(sweepRunning) {
+    if (poolSweepRefreshTimer) {
+      clearTimeout(poolSweepRefreshTimer);
+      poolSweepRefreshTimer = null;
+    }
+    if (sweepRunning && !poolBusy && !busy) {
+      poolSweepRefreshTimer = setTimeout(() => {
+        poolSweepRefreshTimer = null;
+        void loadPool();
+      }, 3000);
+    }
+  }
   async function loadPool() {
+    lastPoolRefreshAt = Date.now();
     try {
       const data = await api("accounts");
       renderPoolView(data);
       renderStatsView(data);
+      scheduleSweepFollowup(data.sweepRunning === true);
     } catch (err) {
       $("poolList").replaceChildren(el("p", "muted", "无法读取号池：" + err.message));
     }
@@ -1066,6 +1123,153 @@
     $("reloadLogs")?.addEventListener("click", loadLogs);
     $("logOnlyFailures")?.addEventListener("change", loadLogs);
     $("logLimit")?.addEventListener("change", loadLogs);
+
+    // --- web OAuth sign-in -------------------------------------------------
+    let oauthPollTimer = null;
+    let lastDoneOAuthId = "";
+    function stopOAuthPoll() {
+      if (oauthPollTimer) { clearInterval(oauthPollTimer); oauthPollTimer = null; }
+    }
+    function showOAuthResult(kind, text, showPoolBtn = false) {
+      const box = $("oauthResult");
+      if (!box) return;
+      box.className = "oauth-result " + (kind === "ok" ? "ok" : "fail");
+      if ($("oauthResultText")) $("oauthResultText").textContent = text;
+      hidden("oauthResult", false);
+      hidden("oauthViewPool", !showPoolBtn);
+    }
+    function renderOAuthState(st) {
+      if (!st || st.state === "idle" || st.state === "canceled") {
+        stopOAuthPoll();
+        hidden("oauthBox", true);
+        hidden("oauthResult", true);
+        hidden("oauthWaitingArea", false);
+        if ($("oauthStart")) { $("oauthStart").disabled = false; $("oauthStart").textContent = "生成授权链接"; }
+        return;
+      }
+      hidden("oauthBox", false);
+      if (st.url && $("oauthUrlInput")) $("oauthUrlInput").value = st.url;
+      const statusEl = $("oauthStatus");
+      if (st.state === "waiting") {
+        hidden("oauthWaitingArea", false);
+        hidden("oauthResult", true);
+        if ($("oauthStart")) { $("oauthStart").disabled = false; $("oauthStart").textContent = "重新生成链接"; }
+        if (statusEl) {
+          statusEl.textContent = st.callbackListening
+            ? "等待浏览器完成授权（本地回调 127.0.0.1:1455 已就绪；也可以复制链接到任意浏览器登录）…"
+            : "提示：1455 端口被占用或保留。请打开或复制上方链接在浏览器登录后，将跳转后的完整地址粘贴到下方提交。";
+        }
+      } else if (st.state === "exchanging") {
+        hidden("oauthWaitingArea", false);
+        hidden("oauthResult", true);
+        if (statusEl) statusEl.textContent = "已收到授权回调，正在换取令牌、检测剩余生图额度并入池…";
+      } else if (st.state === "done") {
+        stopOAuthPoll();
+        hidden("oauthWaitingArea", true);
+        if ($("oauthStart")) { $("oauthStart").disabled = false; $("oauthStart").textContent = "继续授权下一个号"; }
+        if ($("oauthCallbackInput")) $("oauthCallbackInput").value = "";
+        const planSeg = st.planType ? ` · ${String(st.planType).toUpperCase()}` : "";
+        const quotaSeg = typeof st.imageQuota === "number"
+          ? ` · 剩余生图额度 ${st.imageQuota}`
+          : (st.quotaChecked ? " · 额度已同步" : "");
+        const msg = `✓ 网页授权成功：${st.accountLabel || "新账号"}${planSeg}${quotaSeg}，已入池并同步到 Providers`;
+        showOAuthResult("ok", msg, true);
+        if (st.id !== lastDoneOAuthId) {
+          lastDoneOAuthId = st.id || "done";
+          notice(msg);
+          void loadPool();
+        }
+      } else if (st.state === "failed") {
+        stopOAuthPoll();
+        hidden("oauthWaitingArea", false);
+        if ($("oauthStart")) { $("oauthStart").disabled = false; $("oauthStart").textContent = "重新生成链接"; }
+        const msg = "授权失败：" + (st.error || "请重新生成授权链接重试");
+        if (statusEl) statusEl.textContent = msg;
+        showOAuthResult("fail", msg, false);
+        notice("网页" + msg, true);
+      }
+    }
+    async function pollOAuthStatus() {
+      try {
+        const st = await api("oauth/status");
+        renderOAuthState(st);
+      } catch {}
+    }
+    async function startWebOAuth() {
+      const btn = $("oauthStart");
+      if (btn) { btn.disabled = true; btn.textContent = "正在生成…"; }
+      hidden("oauthResult", true);
+      try {
+        const proxy = ($("proxyInput")?.value || $("poolProxyInput")?.value || "").trim();
+        const st = await api("oauth/start", { proxy });
+        renderOAuthState(st);
+        stopOAuthPoll();
+        oauthPollTimer = setInterval(() => { void pollOAuthStatus(); }, 1200);
+        notice("已生成网页授权链接：可点击「打开网页授权」或「复制链接」到浏览器登录");
+      } catch (err) {
+        if (btn) { btn.disabled = false; btn.textContent = "生成授权链接"; }
+        showOAuthResult("fail", "无法生成授权链接：" + err.message, false);
+        notice("无法生成授权链接：" + err.message, true);
+      }
+    }
+    $("oauthStart")?.addEventListener("click", startWebOAuth);
+    $("oauthViewPool")?.addEventListener("click", () => {
+      tab("pool");
+    });
+    $("goOAuth")?.addEventListener("click", () => {
+      tab("import");
+      $("oauthCard")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      void startWebOAuth();
+    });
+    $("oauthOpen")?.addEventListener("click", async () => {
+      try {
+        await api("oauth/open", {});
+        notice("已在系统浏览器中打开授权页面");
+      } catch (err) {
+        const url = $("oauthUrlInput")?.value || "";
+        if (url) window.open(url, "_blank", "noopener,noreferrer");
+        notice("请在新打开的页面授权，或点「复制链接」手动打开：" + err.message, true);
+      }
+    });
+    $("oauthCopy")?.addEventListener("click", async () => {
+      const url = $("oauthUrlInput")?.value || "";
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+        notice("授权链接已复制到剪贴板，可粘贴到任意浏览器或无痕窗口完成登录");
+      } catch {
+        $("oauthUrlInput").focus();
+        $("oauthUrlInput").select();
+        document.execCommand?.("copy");
+        notice("已选中授权链接，请按 Ctrl+C 复制到浏览器打开");
+      }
+    });
+    $("oauthSubmitCallback")?.addEventListener("click", async () => {
+      const raw = ($("oauthCallbackInput")?.value || "").trim();
+      if (!raw) {
+        showOAuthResult("fail", "请先粘贴浏览器跳转后的回调链接或授权码", false);
+        return;
+      }
+      const btn = $("oauthSubmitCallback");
+      if (btn) { btn.disabled = true; btn.textContent = "提交中…"; }
+      hidden("oauthResult", true);
+      if ($("oauthStatus")) $("oauthStatus").textContent = "正在提交回调、换取令牌并检测剩余生图额度…";
+      try {
+        const res = await api("oauth/callback", { callbackUrl: raw });
+        renderOAuthState(res);
+      } catch (err) {
+        showOAuthResult("fail", "回调提交失败：" + err.message, false);
+        notice("回调提交失败：" + err.message, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "提交回调"; }
+      }
+    });
+    $("oauthCancel")?.addEventListener("click", async () => {
+      stopOAuthPoll();
+      try { await api("oauth/cancel", {}); } catch {}
+      renderOAuthState({ state: "canceled" });
+      notice("已取消网页授权");
+    });
     $("copyLogs")?.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText($("logView").innerText);
@@ -1074,14 +1278,21 @@
         notice("复制失败；请手动选中日志文本。", true);
       }
     });
-    window.addEventListener("focus", () => { loadPendingDraft(); });
+    function refreshOnReturn() {
+      loadPendingDraft();
+      if (oauthPollTimer) void pollOAuthStatus();
+      if (!busy && !poolBusy && Date.now() - lastPoolRefreshAt > 2500) {
+        void loadPool();
+      }
+    }
+    window.addEventListener("focus", refreshOnReturn);
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) loadPendingDraft();
+      if (!document.hidden) refreshOnReturn();
     });
     window.addEventListener("message", (ev) => {
       if (ev.data?.magpie !== 1) return;
       if (ev.data?.event === "visibility" && ev.data?.data?.visible === true) {
-        loadPendingDraft();
+        refreshOnReturn();
         return;
       }
       if (ev.data?.event === "action") {

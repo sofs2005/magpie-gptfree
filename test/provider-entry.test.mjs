@@ -40,19 +40,22 @@ async function harness(options = {}) {
   return { service, base, page, api, close: () => service.close() };
 }
 
-test("Providers uses GPT号池 display name and URL-less direct file dialog with zero select prompt buttons", async () => {
+test("Providers uses GPT号池 display name and exposes browser OAuth + direct TXT file dialog methods", async () => {
   const plugin = await GPTFreePoolPlugin();
   const cfg = { provider: {} };
   await plugin.config(cfg);
   assert.equal(cfg.provider[POOL_PROVIDER].name, "GPT号池");
   assert.equal(plugin.auth.provider, "gptfree-pool");
   assert.equal(plugin.auth.single, undefined);
-  assert.equal(plugin.auth.methods.length, 1);
+  assert.equal(plugin.auth.methods.length, 2);
   assert.equal(plugin.auth.methods[0].type, "oauth");
-  assert.equal(plugin.auth.methods[0].keyless, undefined);
-  assert.equal(plugin.auth.methods[0].prompts, undefined);
-  assert.equal(plugin.auth.methods[0].label.includes("GPT号池"), true);
+  assert.match(plugin.auth.methods[0].label, /网页登录授权/);
   assert.equal(typeof plugin.auth.methods[0].authorize, "function");
+  assert.equal(plugin.auth.methods[1].type, "oauth");
+  assert.equal(plugin.auth.methods[1].keyless, undefined);
+  assert.equal(plugin.auth.methods[1].prompts, undefined);
+  assert.equal(plugin.auth.methods[1].label.includes("GPT号池"), true);
+  assert.equal(typeof plugin.auth.methods[1].authorize, "function");
 });
 
 test("Windows native picker invokes a system OpenFileDialog titled GPT号池, never a shell or browser", async () => {

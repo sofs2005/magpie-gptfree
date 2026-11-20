@@ -31,7 +31,36 @@
         <button type="button" role="tab" class="tab" aria-selected="false" data-tab="policy">轮转策略与日志</button>
       </div>
       <section id="importPanel" class="panel" role="tabpanel">
-        <div class="section-head"><h2><span class="step">01</span> 批量导入账号</h2>
+        <div id="oauthCard" class="oauth-card">
+          <div class="section-head">
+            <div>
+              <h2><span class="step">OAuth</span> 网页登录授权</h2>
+              <p class="muted tiny">类似 Provider 网页登录：跳转浏览器授权，或复制链接到任意浏览器/无痕窗口登录并自动入池。</p>
+            </div>
+            <button id="oauthStart" type="button" class="btn primary small">生成授权链接</button>
+          </div>
+          <div id="oauthBox" class="oauth-box hidden">
+            <div id="oauthWaitingArea" class="oauth-waiting">
+              <div class="oauth-url-row">
+                <input id="oauthUrlInput" type="text" readonly spellcheck="false" aria-label="网页授权链接">
+                <button id="oauthOpen" type="button" class="btn primary small">打开网页授权</button>
+                <button id="oauthCopy" type="button" class="btn secondary small">复制链接</button>
+                <button id="oauthCancel" type="button" class="btn secondary small">取消</button>
+              </div>
+              <div id="oauthStatus" class="muted tiny" role="status">等待网页完成登录授权…</div>
+              <div class="oauth-callback-row">
+                <input id="oauthCallbackInput" type="text" spellcheck="false" autocomplete="off" placeholder="若在其他浏览器/远程授权或未自动回传，粘贴跳转后的完整回调地址（http://localhost:1455/auth/callback?code=...）">
+                <button id="oauthSubmitCallback" type="button" class="btn secondary small">提交回调</button>
+              </div>
+            </div>
+            <div id="oauthResult" class="oauth-result hidden" role="status">
+              <span id="oauthResultText"></span>
+              <button id="oauthViewPool" type="button" class="btn secondary small hidden">查看我的账号池</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-head with-top"><h2><span class="step">01</span> 批量导入账号</h2>
           <span class="muted tiny">单批最多 100 条 · 可多次追加，累计支持 1000 个多账号轮询</span></div>
 
         <div class="format-guide">
@@ -113,10 +142,11 @@
             <button id="refreshAllPool" type="button" class="btn primary small">全部检测 / 刷新授权</button>
             <button id="syncProviders" type="button" class="btn secondary small">同步到 Providers</button>
             <button id="refreshAccounts" type="button" class="btn secondary small">刷新列表</button>
+            <button id="goOAuth" type="button" class="btn secondary small">+ 网页登录授权</button>
             <button id="goImport" type="button" class="btn secondary small">+ 继续批量导入</button>
           </div>
         </div>
-        <p class="muted tiny">每个入池账号都会分别同步到 Magpie Providers 成为独立可勾选账号（支持设为首选与独立并发）；若在 Providers 误删了条目，可点「同步到 Providers」立即恢复。</p>
+        <p class="muted tiny">每个入池账号都会分别同步到 Magpie Providers 成为独立可勾选账号；打开某一行右侧的「优先使用」开关，即可将该账号加入优先号池（生图与对话均优先调度，限流后自动切到其余账号）。</p>
         <div class="pool-toolbar">
           <div id="poolSummary" class="pool-summary">加载中…</div>
           <input id="poolProxyInput" type="url" class="pool-proxy" spellcheck="false" autocomplete="off" aria-label="刷新用代理地址" placeholder="刷新代理（可选）如 http://127.0.0.1:7890">
